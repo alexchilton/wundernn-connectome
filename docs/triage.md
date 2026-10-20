@@ -67,3 +67,5 @@ Soft-mask (|y| x P(scored)) GRU 128x2, 600 seqs, epoch 4: held-out 0.67231 (subm
 Soft-mask GRU 128x2 (600 seqs, epoch 4): held-out 0.67231 -> public 0.63693 (offset -0.035), platform 25m41s.
 Soft mask over |y|-weighted MSE: +0.0103 held-out but +0.0041 public; positive, but inside the offset scatter (-0.026 to -0.036).
 Working offset for upload decisions from 2026-10-20 23:30: -0.035.
+Full-data soft-mask GRU 128x2 (full1): held-out 0.68310 -> public 0.65392 (offset -0.029), platform 26m12s; +0.017 public over the 600-seq model.
+Offsets over 5 models: -0.026, -0.036, -0.029, -0.035, -0.029; working offset back to about -0.03. Prize line 0.67017 needs ~0.700 held-out.

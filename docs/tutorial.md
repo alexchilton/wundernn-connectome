@@ -308,7 +308,7 @@ Checked (*measured*): the ONNX model run row by row in `solution.py` gives the s
 | GRU, \|y\|-weighted MSE, 600 train seqs | 0.66197 (epoch 4) | — | **0.63279** |
 | GRU, \|y\| × P(scored) soft mask, 600 train seqs | 0.67231 (epoch 4) | — | 0.63693 |
 | GRU + soft mask + valid + reset 2000 | next | — | — |
-| full training set on Colab A100 | after the NTL fold run | — | — |
+| GRU soft mask, full training set (Colab L4, 4 epochs) | 0.68310 | — | **0.65392** |
 
 For scale: dozken's best single model reached 0.657 public on 2026-09-16, when #1 was 0.660.
 Their local-to-public offset was about −0.03; ours, from the baseline, is −0.026 (held-out 0.61987 → public 0.59353).
