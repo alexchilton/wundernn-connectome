@@ -303,14 +303,15 @@ Checked (*measured*): the ONNX model run row by row in `solution.py` gives the s
 
 | model | held-out valid 0–191 | full valid | public board |
 |---|---|---|---|
-| provided baseline GRU 128×2 | **0.61987** (*measured*) | **0.617052** (*measured*, equals organisers' figure) | uploaded, pending |
+| provided baseline GRU 128×2 | **0.61987** (*measured*) | **0.617052** (*measured*, equals organisers' figure) | **0.59353** (2026-10-20, 26m36s on the platform) |
 | GRU, plain MSE, 600 train seqs | running | — | — |
 | GRU, \|y\|-weighted MSE, 600 train seqs | queued | — | — |
 | GRU + soft mask + valid + reset 2000 | next | — | — |
 | full training set on Colab A100 | after the NTL fold run | — | — |
 
 For scale: dozken's best single model reached 0.657 public on 2026-09-16, when #1 was 0.660.
-Their local-to-public offset was about −0.03.
+Their local-to-public offset was about −0.03; ours, from the baseline, is −0.026 (held-out 0.61987 → public 0.59353).
+The platform ran the baseline in 26m36s against 11m38s on our M4: 2.29× slower, so the 60-minute limit is about 26 local minutes, or about 42 µs per call; we treat ≤ 28 µs as safe because platform speed drifts.
 
 Open questions, in order:
 

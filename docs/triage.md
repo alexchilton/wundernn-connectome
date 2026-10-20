@@ -52,3 +52,10 @@ Recommended first: 1, because it costs nothing at inference time and the metric 
 Server CPU speed.
 Whether valid and test come from the same period or instrument mix.
 How the visible valid mask differs from the hidden test mask (the FAQ warns against fitting the visible mask).
+
+## Board calibration (2026-10-20)
+
+Baseline uploaded unchanged: public 0.59353, platform time 26m36s, memory 624 MB.
+Offset: held-out valid[0:192] 0.61987 -> public 0.59353 = -0.026; full valid 0.61705 -> -0.024.
+Platform speed: 26m36s vs 698 s locally on the M4 = 2.29x slower.
+Budget: 60 min / 2.29 = 26 local min = about 42 us per call on the M4; treat <= 28 us as safe (dozken saw the same graph drift 38 -> 64 min).
