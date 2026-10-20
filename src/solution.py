@@ -28,12 +28,15 @@ class PredictionModel:
         self.names = [f"hidden_{i}" for i in range(meta["layers"])]
         self.hidden = [np.zeros((1, 1, meta["hidden"]), dtype=np.float32) for _ in self.names]
         self.seq_ix = None
+        self.state_reset = int(meta.get("state_reset", 0))
 
     def predict(self, data_point):
         if data_point.seq_ix != self.seq_ix:
             self.seq_ix = data_point.seq_ix
             for h in self.hidden:
                 h.fill(0.0)
+        elif self.state_reset and data_point.step_in_seq % self.state_reset == 0:
+            self.hidden = [np.zeros_like(h) for h in self.hidden]
         feeds = {"features": np.asarray(data_point.state, dtype=np.float32).reshape(1, 1, 112)}
         feeds.update(zip(self.names, self.hidden))
         out = self.session.run(None, feeds)

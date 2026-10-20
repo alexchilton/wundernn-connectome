@@ -42,6 +42,9 @@ ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
 ap.add_argument("--resume", action="store_true")
 ap.add_argument("--init", default="")
+ap.add_argument("--soft-mask", action="store_true", help="weight the train loss by <data>/<train-name>_P.npy (mask model P(scored))")
+ap.add_argument("--add-valid-from", type=int, default=0, help="also train on valid[k:] with its true mask (0 = off)")
+ap.add_argument("--state-reset", type=int, default=0, help="zero the GRU state every N rows, in training, eval and export (0 = never)")
 ap.add_argument("--max-batches", type=int, default=0, help="smoke test: stop after this many batches")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
@@ -76,17 +79,29 @@ def load(name, n):
 
 
 Xtr, Ytr, _ = load(a.train_name, a.n_train)
+Ptr = None
+if a.soft_mask:
+    Ptr = np.load(f"{a.data}/{a.train_name}_P.npy", mmap_mode="r")[:Xtr.shape[0]]
 Xva, Yva, Mva = load(a.valid_name, a.n_valid)
-print(f"train {Xtr.shape[0]} seqs, valid {Xva.shape[0]} seqs (mask {'yes' if Mva is not None else 'no'})", flush=True)
+# training pool: (X, Y, W) sources; W is a per-row weight multiplier (None = 1)
+sources = [(Xtr, Ytr, Ptr)]
+if a.add_valid_from:
+    Xv, Yv, Mv = load(a.valid_name, 0)
+    sources.append((Xv[a.add_valid_from:], Yv[a.add_valid_from:], Mv[a.add_valid_from:]))
+pool = [(si, i) for si, (X, _, _) in enumerate(sources) for i in range(X.shape[0])]
+if a.state_reset:
+    assert a.state_reset % a.chunk == 0 and 2000 % a.state_reset == 0 or a.state_reset % 2000 == 0, "state-reset must align with chunk and eval chunks"
+print(f"train pool {len(pool)} seqs ({' + '.join(str(X.shape[0]) for X, _, _ in sources)}), soft mask {a.soft_mask}, "
+      f"state reset {a.state_reset}, valid {Xva.shape[0]} seqs (mask {'yes' if Mva is not None else 'no'})", flush=True)
 
 torch.manual_seed(a.seed)
 rng = np.random.default_rng(a.seed)
 model = StackedGRU(a.hidden, a.layers).to(dev)
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
-n_batches = Xtr.shape[0] // a.batch
+n_batches = len(pool) // a.batch
 total = n_batches * a.epochs
 sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=max(total, 1), pct_start=0.05)
-state = dict(epoch=0, batch=0, perm=rng.permutation(Xtr.shape[0]), best=-1.0, history=[])
+state = dict(epoch=0, batch=0, perm=rng.permutation(len(pool)), best=-1.0, history=[])
 
 if a.init:
     model.load_state_dict(torch.load(a.init, map_location=dev)["model"])
@@ -115,8 +130,11 @@ def evaluate():
         x = torch.from_numpy(np.asarray(Xva[s:s + 64], dtype=np.float32)).to(dev)
         hs = [torch.zeros(1, x.shape[0], a.hidden, device=dev) for _ in range(a.layers)]
         out = []
-        for c in range(0, L_SEQ, 2000):
-            p, hs = model(x[:, c:c + 2000], hs)
+        step = min(2000, a.state_reset) if a.state_reset else 2000
+        for c in range(0, L_SEQ, step):
+            if a.state_reset and c % a.state_reset == 0:
+                hs = [torch.zeros_like(h) for h in hs]
+            p, hs = model(x[:, c:c + step], hs)
             out.append(p.float().cpu().numpy())
         p = np.concatenate(out, 1)
         y = np.asarray(Yva[s:s + 64])
@@ -130,9 +148,10 @@ def evaluate():
     return float(np.mean(wp)), wp
 
 
-def loss_fn(p, y, first_step):
+def loss_fn(p, y, first_step, rw):
     y = y.clamp(-2, 2)
     w = y.abs() if a.loss == "wmse" else torch.ones_like(y)
+    w = w * rw[:, :, None]
     if first_step < WARMUP:
         keep = torch.arange(first_step, first_step + y.shape[1], device=y.device) >= WARMUP
         w = w * keep[None, :, None]
@@ -143,15 +162,19 @@ t0 = time.time()
 done_batches = state["epoch"] * n_batches + state["batch"]
 while state["epoch"] < a.epochs:
     while state["batch"] < n_batches:
-        idx = np.sort(state["perm"][state["batch"] * a.batch:(state["batch"] + 1) * a.batch])
-        x = torch.from_numpy(np.asarray(Xtr[idx], dtype=np.float32)).to(dev)
-        y = torch.from_numpy(np.asarray(Ytr[idx], dtype=np.float32)).to(dev)
+        idx = sorted(pool[j] for j in state["perm"][state["batch"] * a.batch:(state["batch"] + 1) * a.batch])
+        x = torch.from_numpy(np.stack([np.asarray(sources[si][0][i], dtype=np.float32) for si, i in idx])).to(dev)
+        y = torch.from_numpy(np.stack([np.asarray(sources[si][1][i], dtype=np.float32) for si, i in idx])).to(dev)
+        rw = torch.from_numpy(np.stack([np.ones(L_SEQ, np.float32) if sources[si][2] is None
+                                        else np.asarray(sources[si][2][i], dtype=np.float32) for si, i in idx])).to(dev)
         hs = [torch.zeros(1, len(idx), a.hidden, device=dev) for _ in range(a.layers)]
         tot = 0.0
         for c in range(0, L_SEQ, a.chunk):
+            if a.state_reset and c % a.state_reset == 0:
+                hs = [torch.zeros_like(h) for h in hs]
             p, hs = model(x[:, c:c + a.chunk], hs)
             hs = [h.detach() for h in hs]
-            loss = loss_fn(p, y[:, c:c + a.chunk], c)
+            loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk])
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -178,7 +201,7 @@ while state["epoch"] < a.epochs:
     print(f"EVAL ep {state['epoch']} end WP {wp:.5f} (t0 {per[0]:.5f} t1 {per[1]:.5f})", flush=True)
     if wp > state["best"]:
         state["best"] = wp; save(f"{a.out}/best.pt")
-    state["epoch"] += 1; state["batch"] = 0; state["perm"] = rng.permutation(Xtr.shape[0])
+    state["epoch"] += 1; state["batch"] = 0; state["perm"] = rng.permutation(len(pool))
     save(f"{a.out}/latest.pt")
 
 # export best (or latest for a smoke run) to ONNX with the baseline's interface
@@ -200,7 +223,7 @@ names = [f"hidden_{i}" for i in range(a.layers)]
 dummy = (torch.zeros(1, 1, NF), *[torch.zeros(1, 1, a.hidden) for _ in range(a.layers)])
 torch.onnx.export(Step(model), dummy, f"{a.out}/model.onnx", input_names=["features", *names],
                   output_names=["prediction", *[f"next_{n}" for n in names]], opset_version=17, dynamo=False)
-json.dump(dict(hidden=a.hidden, layers=a.layers, best_wp=state["best"], source=src, cfg=vars(a)),
+json.dump(dict(hidden=a.hidden, layers=a.layers, state_reset=a.state_reset, best_wp=state["best"], source=src, cfg=vars(a)),
           open(f"{a.out}/meta.json", "w"), indent=1)
 print(f"EXPORTED {a.out}/model.onnx from {src}, best WP {state['best']:.5f}", flush=True)
 print("TRAIN DONE", flush=True)
