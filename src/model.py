@@ -4,6 +4,7 @@ Input features per row (all causal, computed from the raw 112 features):
   x                          always
   x - x_prev                 --diff        (x_prev = x at step 0, so the first difference is 0)
   x - ema_T(x), T in --ema   --ema 10,100  (ema_T(t) = ema_T(t-1) + (x_t - ema_T(t-1)) / T, started at x_0)
+  log(1 + step) / log(20000) --time        (position in the sequence; carried as a step counter state)
 Network: optional Linear projection (--proj), stacked single-layer GRUs, linear head on the top GRU output,
 optionally concatenated with the raw row (--skip).
 
@@ -27,11 +28,11 @@ def model_cfg(c):
     if isinstance(ema, str):
         ema = [float(t) for t in ema.split(",") if t]
     return dict(hidden=c["hidden"], layers=c["layers"], diff=bool(c.get("diff", False)), ema=list(ema),
-                proj=int(c.get("proj", 0) or 0), skip=bool(c.get("skip", False)), state_reset=int(c.get("state_reset", 0) or 0))
+                proj=int(c.get("proj", 0) or 0), skip=bool(c.get("skip", False)), time=bool(c.get("time", False)), state_reset=int(c.get("state_reset", 0) or 0))
 
 
 def feat_dim(mc):
-    return NF * (1 + int(mc["diff"]) + len(mc["ema"]))
+    return NF * (1 + int(mc["diff"]) + len(mc["ema"])) + int(mc.get("time", False))
 
 
 def make_feats(x, mc):
@@ -45,6 +46,9 @@ def make_feats(x, mc):
         al = 1.0 / T
         e, _ = lfilter([al], [1.0, -(1.0 - al)], x, axis=1, zi=(1.0 - al) * x[:, :1, :])
         parts.append(x - e)
+    if mc.get("time"):
+        t = (np.log1p(np.arange(x.shape[1], dtype=np.float32)) / np.float32(np.log(20000.0)))[None, :, None]
+        parts.append(np.broadcast_to(t, (x.shape[0], x.shape[1], 1)))
     return np.concatenate(parts, -1).astype(np.float32) if len(parts) > 1 else x
 
 
@@ -74,7 +78,7 @@ class Step(nn.Module):
 
     def __init__(self, net, mc):
         super().__init__()
-        self.net, self.L, self.diff = net, mc["layers"], mc["diff"]
+        self.net, self.L, self.diff, self.time = net, mc["layers"], mc["diff"], mc.get("time", False)
         self.K = len(mc["ema"])
         if self.K:
             self.register_buffer("alpha", torch.tensor(np.repeat([1.0 / T for T in mc["ema"]], NF), dtype=torch.float32))
@@ -89,6 +93,9 @@ class Step(nn.Module):
             xt = x.repeat(1, 1, self.K)
             ema = ema + self.alpha * (xt - ema)
             parts.append(xt - ema); extra.append(ema)
+        if self.time:
+            t = states[k]; k += 1
+            parts.append(torch.log1p(t) / float(np.log(20000.0))); extra.append(t + 1.0)
         p, new = self.net(torch.cat(parts, -1) if len(parts) > 1 else x, hs)
         return (p, *new, *extra)
 
@@ -99,6 +106,8 @@ def state_spec(mc):
         s.append(dict(name="prev_x", shape=[1, 1, NF], init="x", tile=1, reset=False))
     if mc["ema"]:
         s.append(dict(name="ema", shape=[1, 1, NF * len(mc["ema"])], init="x", tile=len(mc["ema"]), reset=False))
+    if mc.get("time"):
+        s.append(dict(name="step", shape=[1, 1, 1], init="zero", reset=False))
     return s
 
 

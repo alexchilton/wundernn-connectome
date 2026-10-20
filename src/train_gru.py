@@ -51,6 +51,7 @@ ap.add_argument("--diff", action="store_true", help="add x - x_prev to the input
 ap.add_argument("--ema", default="", help="comma list of EMA time constants; adds x - ema_T(x) per T")
 ap.add_argument("--proj", type=int, default=0, help="Linear input projection width (0 = none)")
 ap.add_argument("--skip", action="store_true", help="head also sees the raw row")
+ap.add_argument("--time", action="store_true", help="add log(1 + step) / log(20000) as an input")
 ap.add_argument("--max-batches", type=int, default=0, help="smoke test: stop after this many batches")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
