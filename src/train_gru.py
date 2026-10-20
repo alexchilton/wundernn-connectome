@@ -9,7 +9,8 @@ Loss is applied on steps >= 99 only. Targets are clipped to [-2, 2] as the score
 Checkpoints: <out>/latest.pt every --save-every batches, <out>/best.pt on best valid WP.
 --resume restores model, optimiser, scheduler, epoch, batch position, permutation and RNG.
 --init loads model weights only.
-Export: <out>/model.onnx + <out>/meta.json, same interface as the baseline (features, hidden_k).
+Export: <out>/model.onnx + <out>/meta.json via model.export (features in, explicit state tensors in/out).
+Architecture options (--diff, --ema, --proj, --skip) are documented in model.py.
 """
 import argparse, json, os, sys, time
 import numpy as np
@@ -18,6 +19,7 @@ import torch.nn as nn
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "wnn_connectome_starterpack"))
 from utils import weighted_pearson  # noqa: E402
+from model import Net, model_cfg, make_feats, export  # noqa: E402
 
 WARMUP, L_SEQ, NF = 99, 20000, 112
 
@@ -45,27 +47,15 @@ ap.add_argument("--init", default="")
 ap.add_argument("--soft-mask", action="store_true", help="weight the train loss by <data>/<train-name>_P.npy (mask model P(scored))")
 ap.add_argument("--add-valid-from", type=int, default=0, help="also train on valid[k:] with its true mask (0 = off)")
 ap.add_argument("--state-reset", type=int, default=0, help="zero the GRU state every N rows, in training, eval and export (0 = never)")
+ap.add_argument("--diff", action="store_true", help="add x - x_prev to the inputs")
+ap.add_argument("--ema", default="", help="comma list of EMA time constants; adds x - ema_T(x) per T")
+ap.add_argument("--proj", type=int, default=0, help="Linear input projection width (0 = none)")
+ap.add_argument("--skip", action="store_true", help="head also sees the raw row")
 ap.add_argument("--max-batches", type=int, default=0, help="smoke test: stop after this many batches")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 print("CONFIG", json.dumps(vars(a)), flush=True)
 dev = torch.device(a.device)
-
-
-class StackedGRU(nn.Module):
-    """Separate single-layer GRUs so each layer's state is its own ONNX input, like the baseline."""
-
-    def __init__(self, hidden, layers):
-        super().__init__()
-        self.grus = nn.ModuleList([nn.GRU(NF if i == 0 else hidden, hidden, batch_first=True) for i in range(layers)])
-        self.head = nn.Linear(hidden, 2)
-
-    def forward(self, x, hs):
-        new = []
-        for gru, h in zip(self.grus, hs):
-            x, h = gru(x, h)
-            new.append(h)
-        return self.head(x), new
 
 
 def load(name, n):
@@ -96,7 +86,9 @@ print(f"train pool {len(pool)} seqs ({' + '.join(str(X.shape[0]) for X, _, _ in 
 
 torch.manual_seed(a.seed)
 rng = np.random.default_rng(a.seed)
-model = StackedGRU(a.hidden, a.layers).to(dev)
+MC = model_cfg(vars(a))
+print("MODEL", json.dumps(MC), flush=True)
+model = Net(MC).to(dev)
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
 n_batches = len(pool) // a.batch
 total = n_batches * a.epochs
@@ -108,7 +100,7 @@ if a.init:
     print("INIT weights from", a.init, flush=True)
 if a.resume and os.path.exists(f"{a.out}/latest.pt"):
     ck = torch.load(f"{a.out}/latest.pt", map_location=dev, weights_only=False)
-    if ck["cfg"]["hidden"] != a.hidden or ck["cfg"]["layers"] != a.layers:
+    if model_cfg(ck["cfg"]) != MC:
         raise SystemExit("refusing to resume across a shape change")
     model.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"]); sched.load_state_dict(ck["sched"])
     state = ck["state"]; rng.bit_generator.state = ck["rng"]; torch.set_rng_state(ck["torch_rng"])
@@ -127,7 +119,7 @@ def evaluate():
     model.eval()
     ys, ps = [], []
     for s in range(0, Xva.shape[0], 64):
-        x = torch.from_numpy(np.asarray(Xva[s:s + 64], dtype=np.float32)).to(dev)
+        x = torch.from_numpy(make_feats(np.asarray(Xva[s:s + 64], dtype=np.float32), MC)).to(dev)
         hs = [torch.zeros(1, x.shape[0], a.hidden, device=dev) for _ in range(a.layers)]
         out = []
         step = min(2000, a.state_reset) if a.state_reset else 2000
@@ -163,7 +155,7 @@ done_batches = state["epoch"] * n_batches + state["batch"]
 while state["epoch"] < a.epochs:
     while state["batch"] < n_batches:
         idx = sorted(pool[j] for j in state["perm"][state["batch"] * a.batch:(state["batch"] + 1) * a.batch])
-        x = torch.from_numpy(np.stack([np.asarray(sources[si][0][i], dtype=np.float32) for si, i in idx])).to(dev)
+        x = torch.from_numpy(make_feats(np.stack([np.asarray(sources[si][0][i], dtype=np.float32) for si, i in idx]), MC)).to(dev)
         y = torch.from_numpy(np.stack([np.asarray(sources[si][1][i], dtype=np.float32) for si, i in idx])).to(dev)
         rw = torch.from_numpy(np.stack([np.ones(L_SEQ, np.float32) if sources[si][2] is None
                                         else np.asarray(sources[si][2][i], dtype=np.float32) for si, i in idx])).to(dev)
@@ -204,26 +196,9 @@ while state["epoch"] < a.epochs:
     state["epoch"] += 1; state["batch"] = 0; state["perm"] = rng.permutation(len(pool))
     save(f"{a.out}/latest.pt")
 
-# export best (or latest for a smoke run) to ONNX with the baseline's interface
+# export best (or latest for a smoke run) to ONNX
 src = f"{a.out}/best.pt" if os.path.exists(f"{a.out}/best.pt") else f"{a.out}/latest.pt"
 model.load_state_dict(torch.load(src, map_location="cpu", weights_only=False)["model"])
-model = model.cpu().eval()
-
-
-class Step(nn.Module):
-    def __init__(self, m):
-        super().__init__(); self.m = m
-
-    def forward(self, features, *hidden):
-        p, hs = self.m(features, list(hidden))
-        return (p, *hs)
-
-
-names = [f"hidden_{i}" for i in range(a.layers)]
-dummy = (torch.zeros(1, 1, NF), *[torch.zeros(1, 1, a.hidden) for _ in range(a.layers)])
-torch.onnx.export(Step(model), dummy, f"{a.out}/model.onnx", input_names=["features", *names],
-                  output_names=["prediction", *[f"next_{n}" for n in names]], opset_version=17, dynamo=False)
-json.dump(dict(hidden=a.hidden, layers=a.layers, state_reset=a.state_reset, best_wp=state["best"], source=src, cfg=vars(a)),
-          open(f"{a.out}/meta.json", "w"), indent=1)
+export(model, MC, a.out, dict(best_wp=state["best"], source=src, cfg=vars(a)))
 print(f"EXPORTED {a.out}/model.onnx from {src}, best WP {state['best']:.5f}", flush=True)
 print("TRAIN DONE", flush=True)

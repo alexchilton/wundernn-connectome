@@ -1,4 +1,8 @@
-"""Stateful ONNX GRU submission: loads model.onnx and meta.json from the same directory."""
+"""Stateful ONNX submission: loads model.onnx and meta.json from the same directory.
+
+meta.json lists every state tensor the graph carries: "zero" states start at 0, "x" states start from the
+first row of the sequence (tiled), and states with reset=True are zeroed every state_reset rows.
+"""
 from pathlib import Path
 import json
 import os
@@ -25,22 +29,25 @@ class PredictionModel:
         options.add_session_config_entry("session.inter_op.allow_spinning", "0")
         self.session = ort.InferenceSession(str(HERE / "model.onnx"), sess_options=options,
                                             providers=["CPUExecutionProvider"])
-        self.names = [f"hidden_{i}" for i in range(meta["layers"])]
-        self.hidden = [np.zeros((1, 1, meta["hidden"]), dtype=np.float32) for _ in self.names]
-        self.seq_ix = None
+        self.spec = meta.get("states") or [dict(name=f"hidden_{i}", shape=[1, 1, meta["hidden"]], init="zero", reset=True)
+                                           for i in range(meta["layers"])]
+        self.names = [s["name"] for s in self.spec]
+        self.values = [np.zeros(s["shape"], dtype=np.float32) for s in self.spec]
         self.state_reset = int(meta.get("state_reset", 0))
+        self.seq_ix = None
 
     def predict(self, data_point):
+        x = np.asarray(data_point.state, dtype=np.float32).reshape(1, 1, 112)
         if data_point.seq_ix != self.seq_ix:
             self.seq_ix = data_point.seq_ix
-            for h in self.hidden:
-                h.fill(0.0)
+            self.values = [np.tile(x, (1, 1, s.get("tile", 1))) if s["init"] == "x" else np.zeros(s["shape"], dtype=np.float32)
+                           for s in self.spec]
         elif self.state_reset and data_point.step_in_seq % self.state_reset == 0:
-            self.hidden = [np.zeros_like(h) for h in self.hidden]
-        feeds = {"features": np.asarray(data_point.state, dtype=np.float32).reshape(1, 1, 112)}
-        feeds.update(zip(self.names, self.hidden))
+            self.values = [np.zeros_like(v) if s["reset"] else v for s, v in zip(self.spec, self.values)]
+        feeds = {"features": x}
+        feeds.update(zip(self.names, self.values))
         out = self.session.run(None, feeds)
-        self.hidden = out[1:]
+        self.values = out[1:]
         if not data_point.need_prediction:
             return None
         return np.asarray(out[0][0, 0], dtype=np.float32)
