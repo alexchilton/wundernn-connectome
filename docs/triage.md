@@ -61,3 +61,6 @@ Platform speed: 26m36s vs 698 s locally on the M4 = 2.29x slower.
 Budget: 60 min / 2.29 = 26 local min = about 42 us per call on the M4; treat <= 28 us as safe (dozken saw the same graph drift 38 -> 64 min).
 Our |y|-weighted MSE GRU 128x2 (600 train seqs, epoch 4): held-out 0.66197 -> public 0.63279 (offset -0.029), platform 26m22s.
 Held-out gain over baseline +0.042 became +0.039 public: the held-out set predicts the board.
+Plain MSE GRU 128x2 (600 seqs, epoch 4): held-out 0.64906 -> public 0.61346 (offset -0.036).
+Ranking baseline < MSE < weighted MSE holds both locally and on the board; offsets -0.026 / -0.036 / -0.029, so held-out gaps under ~0.01 may not transfer.
+Soft-mask (|y| x P(scored)) GRU 128x2, 600 seqs, epoch 4: held-out 0.67231 (submissions/sub_wsoft.zip).
