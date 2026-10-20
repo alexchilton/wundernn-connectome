@@ -64,3 +64,6 @@ Held-out gain over baseline +0.042 became +0.039 public: the held-out set predic
 Plain MSE GRU 128x2 (600 seqs, epoch 4): held-out 0.64906 -> public 0.61346 (offset -0.036).
 Ranking baseline < MSE < weighted MSE holds both locally and on the board; offsets -0.026 / -0.036 / -0.029, so held-out gaps under ~0.01 may not transfer.
 Soft-mask (|y| x P(scored)) GRU 128x2, 600 seqs, epoch 4: held-out 0.67231 (submissions/sub_wsoft.zip).
+Soft-mask GRU 128x2 (600 seqs, epoch 4): held-out 0.67231 -> public 0.63693 (offset -0.035), platform 25m41s.
+Soft mask over |y|-weighted MSE: +0.0103 held-out but +0.0041 public; positive, but inside the offset scatter (-0.026 to -0.036).
+Working offset for upload decisions from 2026-10-20 23:30: -0.035.

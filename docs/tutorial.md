@@ -306,7 +306,7 @@ Checked (*measured*): the ONNX model run row by row in `solution.py` gives the s
 | provided baseline GRU 128×2 | **0.61987** (*measured*) | **0.617052** (*measured*, equals organisers' figure) | **0.59353** (2026-10-20, 26m36s on the platform) |
 | GRU, plain MSE, 600 train seqs | 0.64906 (epoch 4) | — | 0.61346 |
 | GRU, \|y\|-weighted MSE, 600 train seqs | 0.66197 (epoch 4) | — | **0.63279** |
-| GRU, \|y\| × P(scored) soft mask, 600 train seqs | 0.67231 (epoch 4) | — | uploaded |
+| GRU, \|y\| × P(scored) soft mask, 600 train seqs | 0.67231 (epoch 4) | — | 0.63693 |
 | GRU + soft mask + valid + reset 2000 | next | — | — |
 | full training set on Colab A100 | after the NTL fold run | — | — |
 
