@@ -3,3 +3,4 @@ logs/
 .venv/
 out/
 *.part
+wnn_connectome_starterpack/
