@@ -110,7 +110,7 @@ This is why resetting the state every 2,000 rows helps (section 5c): a model tha
 18% of rows have a target of exactly 0 and weight 0.
 The rows near ±2 carry most of the weight.
 The best prediction under this weighting is not the plain average of what tends to follow; it is that average with large moves counted more heavily.
-Training with the same |y| weight in the loss aims at exactly that (our first A/B test, section 6).
+Training with the same |y| weight in the loss aims at exactly that (our first A/B test, section 7).
 
 ### 2c. Predictions above 2 are wasted
 
@@ -155,17 +155,21 @@ Per row this is about 190,000 multiply-adds (3 × 128 × (112 + 128) + 3 × 128 
 
 Start with the simplest memory: an exponential average.
 
-  h_t = (1 − z) · h_{t−1} + z · x_t
+```
+h_t = (1 − z) · h_{t−1} + z · x_t
+```
 
 With a fixed z = 0.1 the memory forgets slowly; with z = 0.9 it nearly copies the new input.
 The problem: the right forgetting speed depends on the moment (quiet market versus a jump).
 
 A GRU learns z from the data, row by row:
 
-  z_t = sigmoid(W_z x_t + U_z h_{t−1})            the "update gate": how much to change the memory now
-  r_t = sigmoid(W_r x_t + U_r h_{t−1})            the "reset gate": how much of the old memory to use
-  ĥ_t = tanh(W x_t + U (r_t ⊙ h_{t−1}))           the candidate new memory
-  h_t = (1 − z_t) ⊙ h_{t−1} + z_t ⊙ ĥ_t           blend old and new
+```
+z_t = sigmoid(W_z x_t + U_z h_{t−1})            the "update gate": how much to change the memory now
+r_t = sigmoid(W_r x_t + U_r h_{t−1})            the "reset gate": how much of the old memory to use
+ĥ_t = tanh(W x_t + U (r_t ⊙ h_{t−1}))           the candidate new memory
+h_t = (1 − z_t) ⊙ h_{t−1} + z_t ⊙ ĥ_t           blend old and new
+```
 
 That is the exponential average with a forgetting speed that the market state chooses, separately for each of the 128 memory slots.
 
@@ -198,7 +202,9 @@ Training only on scored rows instead of all rows gave 0.605 against 0.569.
 The mask model writes P(scored) for every training row.
 The main model's loss then counts each row by
 
-  weight = |y| × P(scored)
+```
+weight = |y| × P(scored)
+```
 
 so the model spends its capacity where the metric looks: on big moves in moments that are likely to be scored.
 Valid sequences 192 onward join the training data with their true mask; sequences 0 to 191 are held out for every evaluation.
