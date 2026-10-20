@@ -304,8 +304,8 @@ Checked (*measured*): the ONNX model run row by row in `solution.py` gives the s
 | model | held-out valid 0–191 | full valid | public board |
 |---|---|---|---|
 | provided baseline GRU 128×2 | **0.61987** (*measured*) | **0.617052** (*measured*, equals organisers' figure) | **0.59353** (2026-10-20, 26m36s on the platform) |
-| GRU, plain MSE, 600 train seqs | running | — | — |
-| GRU, \|y\|-weighted MSE, 600 train seqs | queued | — | — |
+| GRU, plain MSE, 600 train seqs | 0.64906 (epoch 4) | — | pending |
+| GRU, \|y\|-weighted MSE, 600 train seqs | 0.66197 (epoch 4) | — | **0.63279** |
 | GRU + soft mask + valid + reset 2000 | next | — | — |
 | full training set on Colab A100 | after the NTL fold run | — | — |
 
