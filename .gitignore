@@ -1,0 +1,5 @@
+wnn_connectome_starterpack/datasets/
+logs/
+.venv/
+out/
+*.part
