@@ -69,8 +69,14 @@ if a.cmd == "label":
     model.load_state_dict(torch.load(f"{a.out}/best.pt", map_location=dev, weights_only=False)["model"]); model.eval()
     X = np.load(f"{a.data}/{a.name}_X.npy", mmap_mode="r")
     P = np.lib.format.open_memmap(f"{a.data}/{a.name}_P.npy", mode="w+", dtype=np.float16, shape=X.shape[:2])
+    # training used pos_weight = (1 - pos) / pos, which inflates the odds by that factor; undo it so P is calibrated
+    Mv = np.load(f"{a.data}/valid_M.npy", mmap_mode="r")
+    pos = float(np.asarray(Mv[a.holdout:a.holdout + 200, WARMUP:]).mean()); pw = (1 - pos) / pos
+    print(f"calibrating with pos_weight {pw:.3f}", flush=True)
     for s in range(0, X.shape[0], 256):
-        P[s:s + 256] = predict(model, X, s, min(s + 256, X.shape[0]))
+        p = predict(model, X, s, min(s + 256, X.shape[0]))
+        o = p / np.clip(1 - p, 1e-6, None) / pw
+        P[s:s + 256] = o / (1 + o)
         print(f"labelled {min(s + 256, X.shape[0])}/{X.shape[0]}", flush=True)
     P.flush()
     p = np.asarray(P[:, WARMUP:], dtype=np.float32)
