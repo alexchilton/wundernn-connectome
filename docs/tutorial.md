@@ -188,14 +188,60 @@ We have not tested a transformer; a small one with a capped window might fit the
 
 ### 5a. Step 1: learn where the scoring happens (mask model)
 
-The test scores only about 10% of rows, and the training file does not say which.
-But the valid file does.
-So we train a small second GRU (64×2) on valid to predict, row by row, the probability that a row is scored.
+**The problem it solves.**
+The test scores only about 9% of rows, and nobody tells our code which ones.
+The training file does not say either.
+Only the valid file has the `is_scored` column.
+If the main model treats every row as equally important, it spends most of its effort on rows that never count.
 
-*Measured* so far: on 192 held-out valid sequences it reaches AUC 0.908 after one epoch (0.5 would be guessing, 1.0 perfect); dozken reached 0.94.
+**What a mask model is.**
+A second, small model whose only job is to answer one yes/no question per row: *is this row likely to be scored?*
+It outputs a probability, P(scored), between 0 and 1.
+It never predicts the targets; it only says where to look.
 
-Why this matters (*dozken*): the same model scores 0.58 on scored rows and 0.30 on all rows, so scored rows are a different regime.
-Training only on scored rows instead of all rows gave 0.605 against 0.569.
+**How it works.**
+
+1. Input: the same 112 features, one row at a time, in order: the same causal setting as the main model.
+2. Model: a small GRU (2 layers, 64 numbers of memory each) plus one output number, turned into a probability by a sigmoid.
+3. Labels: `is_scored` from valid sequences 192 to 1,872 (1,681 sequences, 33.6M rows).
+4. Loss: binary cross-entropy, the standard loss for yes/no questions; it punishes a confident wrong answer hardest.
+5. Imbalance: only about 1 row in 10 is a "yes", so a model that always says "no" is 90% right and useless.
+   We weight each "yes" row 9.15 times (`pos_weight` = non-scored / scored), so both classes count equally in the loss.
+6. Held out: valid sequences 0 to 191 are never trained on; every number below is measured on them.
+
+Here it is running on a held-out sequence it has never seen (red = truly scored, black = the model's P):
+
+![mask trace](fig/10_mask_trace.png)
+
+It rises on the bursts and stays near zero between them, and it does so using only rows up to the current one.
+It also has false alarms (around step 6650): moments that look like scored moments but were not.
+
+**Why it can work at all.**
+Scored rows are not random.
+Two facts, measured on valid:
+
+- Bursts are sticky: if a row is scored, the next row is scored with probability 0.743; if not, only 0.024.
+  So recent history (the GRU's memory) is very informative.
+- A few features shift strongly on scored rows; `a3` most of all (0.82 standard deviations higher), then `a2` and `a4`:
+
+![mask features](fig/12_mask_features.png)
+
+**How good is it?**
+
+![ROC and calibration](fig/11_mask_roc_calib.png)
+
+- Left: AUC 0.928 on 48 held-out sequences (0.933 on all 192). AUC is the chance that a random scored row gets a higher P than a random unscored row; 0.5 is guessing, 1.0 is perfect. dozken reached 0.94.
+- Right, a counterexample worth knowing: the raw output says P = 0.184 on average, but only 8.5% of rows are scored.
+  That is not a bug in the model, it is the `pos_weight` trick: by counting every "yes" 9 times, we taught the model that "yes" is 9 times more common than it is.
+- The fix is to divide the odds P / (1 − P) by the same 9.15.
+  The orange curve shows the result: much closer to the diagonal, but it now *under*-predicts (mean 0.063 against 0.085).
+  The simple correction overshoots; fitting the correction on held-out data (Platt or isotonic scaling) would land on the diagonal.
+  This is an open item; it changes the size of the weights, not their order.
+
+**How it is used.**
+The mask model runs once over the training file, offline, and writes P(scored) for every row.
+It is **not** part of the submission and costs nothing at scoring time.
+The main model's loss then weights each row by |y| × P(scored) (step 2).
 
 ### 5b. Step 2: label train and weight the loss
 
