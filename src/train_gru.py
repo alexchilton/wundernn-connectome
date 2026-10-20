@@ -52,6 +52,11 @@ ap.add_argument("--ema", default="", help="comma list of EMA time constants; add
 ap.add_argument("--proj", type=int, default=0, help="Linear input projection width (0 = none)")
 ap.add_argument("--skip", action="store_true", help="head also sees the raw row")
 ap.add_argument("--time", action="store_true", help="add log(1 + step) / log(20000) as an input")
+ap.add_argument("--loss-norm", choices=["chunk", "batch"], default="chunk",
+                help="chunk: divide each chunk's loss by its own weight sum; batch: by the batch's mean weight per chunk, "
+                     "so chunks count in proportion to their weight mass, as rows do in the global metric")
+ap.add_argument("--ema-weights", type=float, default=0.0, help="keep an EMA of the weights with this decay per optimiser step; "
+                "evaluate, save as best and export the EMA weights (0 = off)")
 ap.add_argument("--max-batches", type=int, default=0, help="smoke test: stop after this many batches")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
@@ -91,6 +96,10 @@ MC = model_cfg(vars(a))
 print("MODEL", json.dumps(MC), flush=True)
 model = Net(MC).to(dev)
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
+ema_model = None
+if a.ema_weights:
+    from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(a.ema_weights))
 n_batches = len(pool) // a.batch
 total = n_batches * a.epochs
 sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=max(total, 1), pct_start=0.05)
@@ -103,21 +112,29 @@ if a.resume and os.path.exists(f"{a.out}/latest.pt"):
     ck = torch.load(f"{a.out}/latest.pt", map_location=dev, weights_only=False)
     if model_cfg(ck["cfg"]) != MC:
         raise SystemExit("refusing to resume across a shape change")
-    model.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"]); sched.load_state_dict(ck["sched"])
+    model.load_state_dict(ck["raw_model"] if "raw_model" in ck else ck["model"]); opt.load_state_dict(ck["opt"]); sched.load_state_dict(ck["sched"])
+    if ema_model is not None:
+        if "ema_model" not in ck:
+            raise SystemExit("refusing to resume an EMA run from a checkpoint without EMA state")
+        ema_model.load_state_dict(ck["ema_model"])
     state = ck["state"]; rng.bit_generator.state = ck["rng"]; torch.set_rng_state(ck["torch_rng"])
     print(f"RESUMED epoch {state['epoch']} batch {state['batch']}/{n_batches}, best {state['best']:.5f}, "
           f"{len(state['history'])} evals in history, perm len {len(state['perm'])}", flush=True)
 
 
 def save(path):
-    torch.save(dict(model=model.state_dict(), opt=opt.state_dict(), sched=sched.state_dict(), state=state,
+    # "model" is what gets evaluated and exported: the EMA weights when --ema-weights is on
+    extra = dict(raw_model=model.state_dict(), ema_model=ema_model.state_dict()) if ema_model is not None else {}
+    torch.save(dict(model=(ema_model.module if ema_model is not None else model).state_dict(), **extra,
+                    opt=opt.state_dict(), sched=sched.state_dict(), state=state,
                     rng=rng.bit_generator.state, torch_rng=torch.get_rng_state(), cfg=vars(a)), path + ".tmp")
     os.replace(path + ".tmp", path)
 
 
 @torch.no_grad()
 def evaluate():
-    model.eval()
+    net = ema_model.module if ema_model is not None else model
+    net.eval()
     ys, ps = [], []
     for s in range(0, Xva.shape[0], 64):
         x = torch.from_numpy(make_feats(np.asarray(Xva[s:s + 64], dtype=np.float32), MC)).to(dev)
@@ -127,7 +144,7 @@ def evaluate():
         for c in range(0, L_SEQ, step):
             if a.state_reset and c % a.state_reset == 0:
                 hs = [torch.zeros_like(h) for h in hs]
-            p, hs = model(x[:, c:c + step], hs)
+            p, hs = net(x[:, c:c + step], hs)
             out.append(p.float().cpu().numpy())
         p = np.concatenate(out, 1)
         y = np.asarray(Yva[s:s + 64])
@@ -136,19 +153,19 @@ def evaluate():
             m &= np.asarray(Mva[s:s + 64])
         ys.append(y[m]); ps.append(p[m])
     y, p = np.concatenate(ys), np.concatenate(ps)
-    model.train()
+    net.train(); model.train()
     wp = [weighted_pearson(y[:, k], p[:, k]) for k in range(2)]
     return float(np.mean(wp)), wp
 
 
-def loss_fn(p, y, first_step, rw):
+def loss_fn(p, y, first_step, rw, denom=None):
     y = y.clamp(-2, 2)
     w = y.abs() if a.loss == "wmse" else torch.ones_like(y)
     w = w * rw[:, :, None]
     if first_step < WARMUP:
         keep = torch.arange(first_step, first_step + y.shape[1], device=y.device) >= WARMUP
         w = w * keep[None, :, None]
-    return (w * (p - y) ** 2).sum() / w.sum().clamp_min(1e-6)
+    return (w * (p - y) ** 2).sum() / (denom if denom is not None else w.sum().clamp_min(1e-6))
 
 
 t0 = time.time()
@@ -162,16 +179,23 @@ while state["epoch"] < a.epochs:
                                         else np.asarray(sources[si][2][i], dtype=np.float32) for si, i in idx])).to(dev)
         hs = [torch.zeros(1, len(idx), a.hidden, device=dev) for _ in range(a.layers)]
         tot = 0.0
+        denom = None
+        if a.loss_norm == "batch":   # the batch's total loss weight (after warm-up and mask) spread evenly over its chunks
+            wy = y.clamp(-2, 2).abs() if a.loss == "wmse" else torch.ones_like(y)
+            wy = wy * rw[:, :, None]; wy[:, :WARMUP] = 0
+            denom = (wy.sum() / (L_SEQ // a.chunk)).clamp_min(1e-6)
         for c in range(0, L_SEQ, a.chunk):
             if a.state_reset and c % a.state_reset == 0:
                 hs = [torch.zeros_like(h) for h in hs]
             p, hs = model(x[:, c:c + a.chunk], hs)
             hs = [h.detach() for h in hs]
-            loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk])
+            loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk], denom)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
+            if ema_model is not None:
+                ema_model.update_parameters(model)
             tot += loss.item()
         sched.step()
         state["batch"] += 1; done_batches += 1
@@ -199,7 +223,7 @@ while state["epoch"] < a.epochs:
 
 # export best (or latest for a smoke run) to ONNX
 src = f"{a.out}/best.pt" if os.path.exists(f"{a.out}/best.pt") else f"{a.out}/latest.pt"
-model.load_state_dict(torch.load(src, map_location="cpu", weights_only=False)["model"])
+model.load_state_dict(torch.load(src, map_location="cpu", weights_only=False)["model"])   # EMA weights if --ema-weights
 export(model, MC, a.out, dict(best_wp=state["best"], source=src, cfg=vars(a)))
 print(f"EXPORTED {a.out}/model.onnx from {src}, best WP {state['best']:.5f}", flush=True)
 print("TRAIN DONE", flush=True)

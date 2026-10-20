@@ -20,5 +20,18 @@ $C exec -s wnn -f /tmp/wnn_final.py < /dev/null >> $L 2>&1; echo "$(date +%H:%M)
 for s in 0 1; do timeout 90 $C download -s wnn /content/wnn/logs/final_s$s.log logs/colab_final_s$s.log < /dev/null > /dev/null 2>&1; mkdir -p out/final_s$s; timeout 300 $C download -s wnn /content/wnn/out/final_s$s/best.pt out/final_s$s/best.pt < /dev/null >> $L 2>&1; grep EVAL logs/colab_final_s$s.log | tail -2 >> $L; done
 for a in full_h192 full_l3 full_reset2k full_all; do mkdir -p out/$a; [ -s out/$a/best.pt ] || timeout 300 $C download -s wnn /content/wnn/out/$a/best.pt out/$a/best.pt < /dev/null > /dev/null 2>&1; done
 ls -la out/final_s*/best.pt out/full_*/best.pt >> $L 2>&1
+# Fable ideas 1 and 2 on top of the picked recipe, paired with final_s0 (seed 0)
+for f in src/model.py src/train_gru.py; do $C upload -s wnn $f /content/wnn/$f < /dev/null >> $L 2>&1; done
+cat > /tmp/wnn_morning.py <<PY
+import subprocess
+base = ("cd /content/wnn && python -u src/train_gru.py --data out/data --train-name train --valid-name valid --n-valid 192 "
+        "--loss wmse --soft-mask --add-valid-from 192 --batch 64 --chunk 500 --eval-every 48 --save-every 8 --resume --seed 0 $FLAGS")
+for name, extra in [("morning_norm", "--epochs 4 --loss-norm batch"), ("morning_ema8", "--epochs 8 --ema-weights 0.999")]:
+    r = subprocess.run(f"{base} {extra} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
+    open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
+PY
+echo "$(date +%H:%M) morning arms start" >> $L
+$C exec -s wnn -f /tmp/wnn_morning.py < /dev/null >> $L 2>&1; echo "$(date +%H:%M) morning EXEC_RC=$?" >> $L
+for a in morning_norm morning_ema8; do timeout 90 $C download -s wnn /content/wnn/logs/$a.log logs/colab_$a.log < /dev/null > /dev/null 2>&1; mkdir -p out/$a; timeout 300 $C download -s wnn /content/wnn/out/$a/best.pt out/$a/best.pt < /dev/null >> $L 2>&1; grep EVAL logs/colab_$a.log | tail -2 >> $L; done
 $C stop -s wnn < /dev/null >> $L 2>&1
 echo "$(date +%H:%M) OVERNIGHT DONE, colab session stopped" >> $L
