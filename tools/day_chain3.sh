@@ -4,7 +4,7 @@
 # Every arm's best.pt and latest.pt are mirrored to out/<arm>/ every 5 min while it trains, so a dying session
 # loses at most 5 minutes; resume on a new session by uploading latest.pt (the arms run with --resume).
 cd ~/PycharmProjects/wundernn-connectome
-C=~/.local/bin/colab; S=wnn2
+C=~/.local/bin/colab; S=${1:-wnn3}
 L=logs/overnight_final.log
 remote_done() { timeout 90 $C download -s $S /content/wnn/logs/$1.log logs/colab_$1.log < /dev/null > /dev/null 2>&1; grep -q "^EXEC EXIT" logs/colab_$1.log 2>/dev/null; }
 # pull to a temp name first so a failed or partial download never overwrites the last good local copy
@@ -14,8 +14,8 @@ wait_for() { for a in "$@"; do until remote_done $a; do pull $a; sleep 300; done
 started() { for i in $(seq 1 20); do timeout 60 $C download -s $S /content/wnn/logs/$1.log logs/colab_$1.log < /dev/null > /dev/null 2>&1 && grep -q "batch 1/" logs/colab_$1.log && return 0; sleep 30; done; return 1; }
 
 echo "$(date +%H:%M) day chain 3 start (wnn died ~10:20)" >> $L
-if ! timeout 60 $C sessions < /dev/null 2>&1 | grep -q "^\[$S\]"; then
-cd /tmp && timeout 600 $C new -s $S --gpu L4 < /dev/null >> ~/PycharmProjects/wundernn-connectome/$L 2>&1; cd ~/PycharmProjects/wundernn-connectome
+timeout 60 $C sessions < /dev/null 2>&1 | grep -q "^\[$S\]" || { cd /tmp && timeout 600 $C new -s $S --gpu L4 < /dev/null >> ~/PycharmProjects/wundernn-connectome/$L 2>&1; cd ~/PycharmProjects/wundernn-connectome; }
+if ! { timeout 60 $C download -s $S /content/wnn/stage.log logs/colab_stage_$S.log < /dev/null > /dev/null 2>&1 && grep -q "START" logs/colab_stage_$S.log; }; then
 echo 'import os; [os.makedirs(d, exist_ok=True) for d in ("/content/wnn/src","/content/wnn/tools","/content/wnn/out/mask1","/content/wnn/logs","/content/wnn/wnn_connectome_starterpack")]; print("dirs ok")' | timeout 120 $C repl -s $S >> $L 2>&1
 for f in src/*.py tools/fetch_zip_member.py tools/colab_stage.py; do timeout 120 $C upload -s $S $f /content/wnn/$f < /dev/null > /dev/null 2>&1 || echo "upload failed $f" >> $L; done
 timeout 300 $C upload -s $S out/mask1/best.pt /content/wnn/out/mask1/best.pt < /dev/null > /dev/null 2>&1 || echo "upload failed mask1" >> $L
@@ -24,7 +24,7 @@ $C exec -s $S -f tools/colab_stage.py < /dev/null >> $L 2>&1 &
 fi
 until timeout 60 $C download -s $S /content/wnn/stage.log logs/colab_stage_$S.log < /dev/null > /dev/null 2>&1 && grep -q "STAGE DONE" logs/colab_stage_$S.log; do sleep 180; done
 echo "$(date +%H:%M) staged: $(tail -2 logs/colab_stage_$S.log | cut -c1-150 | tr '\n' ' ')" >> $L
-# Drive (mounted once by Alex with `colab drivemount -s wnn2`): arm outputs live on Drive via symlinks, and the
+# Drive (mounted once per session by Alex with `colab drivemount -s <session>`): arm outputs live on Drive via symlinks, and the
 # prepared memmaps are copied there, so a dead session loses neither checkpoints nor the 40-minute staging.
 timeout 900 $C exec -s $S -f tools/colab_drive.py < /dev/null >> $L 2>&1
 echo "$(date +%H:%M) drive: $(timeout 60 $C download -s $S /content/wnn/drive_links.txt /dev/stdout < /dev/null 2>/dev/null | tail -1)" >> $L
