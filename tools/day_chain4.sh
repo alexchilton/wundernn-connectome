@@ -19,6 +19,16 @@ echo "$(date +%H:%M) day chain 4 start (chunk 4000 pair)" >> $L
 timeout 60 $C sessions < /dev/null 2>&1 | grep -q "^\[$S\]" || { cd /tmp && timeout 600 $C new -s $S --gpu L4 < /dev/null >> ~/PycharmProjects/wundernn-connectome/$L 2>&1; cd ~/PycharmProjects/wundernn-connectome; }
 echo "$(date +%H:%M) $S up: waiting for Drive mount (colab drivemount -s $S)" >> $L
 # the session log is keyed by name and keeps an earlier session's auth events: test the mount itself
+# a session with no running job is reclaimed after ~20 min (wnn4 twice on 2026-10-21): hold it busy with a job that
+# returns as soon as Drive is mounted (max 2 h)
+cat > /tmp/wnn_wait_mount.py <<PY
+import os, time
+t = time.time()
+while not os.path.exists("$D/data/train_X.npy") and time.time() - t < 7200:
+    time.sleep(20)
+print("mount seen" if os.path.exists("$D/data/train_X.npy") else "gave up waiting for the mount")
+PY
+$C exec -s $S -f /tmp/wnn_wait_mount.py < /dev/null >> $L 2>&1 &
 until timeout 60 $C ls -s $S $D/data < /dev/null 2>&1 | grep -q "train_X.npy"; do sleep 60; done
 echo "$(date +%H:%M) Drive mounted on $S" >> $L
 echo 'import os; [os.makedirs(d, exist_ok=True) for d in ("/content/wnn/src","/content/wnn/logs","/content/wnn/out","/content/wnn/wnn_connectome_starterpack")]; print("dirs ok")' | timeout 120 $C repl -s $S >> $L 2>&1
