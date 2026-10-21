@@ -110,7 +110,7 @@ This is why resetting the state every 2,000 rows helps (section 5c): a model tha
 18% of rows have a target of exactly 0 and weight 0.
 The rows near ±2 carry most of the weight.
 The best prediction under this weighting is not the plain average of what tends to follow; it is that average with large moves counted more heavily.
-Training with the same |y| weight in the loss aims at exactly that (our first A/B test, section 7).
+Training with the same |y| weight in the loss aims at exactly that (our first A/B test, section 8).
 
 ### 2c. Predictions above 2 are wasted
 
