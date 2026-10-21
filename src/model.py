@@ -27,8 +27,11 @@ def model_cfg(c):
     ema = c.get("ema") or []
     if isinstance(ema, str):
         ema = [float(t) for t in ema.split(",") if t]
-    return dict(hidden=c["hidden"], layers=c["layers"], diff=bool(c.get("diff", False)), ema=list(ema),
-                proj=int(c.get("proj", 0) or 0), skip=bool(c.get("skip", False)), time=bool(c.get("time", False)), state_reset=int(c.get("state_reset", 0) or 0))
+    mc = dict(hidden=c["hidden"], layers=c["layers"], diff=bool(c.get("diff", False)), ema=list(ema),
+              proj=int(c.get("proj", 0) or 0), skip=bool(c.get("skip", False)), time=bool(c.get("time", False)), state_reset=int(c.get("state_reset", 0) or 0))
+    if c.get("dz"):     # only present when set, so configs of older checkpoints compare equal
+        mc.update(dz=True, dropout=float(c.get("dropout", 0.1)))
+    return mc
 
 
 def feat_dim(mc):
@@ -53,9 +56,26 @@ def make_feats(x, mc):
 
 
 class Net(nn.Module):
+    """Plain: optional Linear projection, stacked GRUs, linear head (optionally also on the raw row).
+    dz=True (the block design read in dozken/wunder challenge-3/src/model.py, our own implementation): raw row
+    standardised by train mean/std and clipped at +-10 (diff scaled by the same std), projection Linear -> GELU ->
+    LayerNorm, dropout between GRU layers, head LayerNorm(concat(GRU out, projected input)) -> Linear(H) -> GELU ->
+    Dropout -> Linear(2)."""
+
     def __init__(self, mc):
         super().__init__()
         H, L, nin = mc["hidden"], mc["layers"], feat_dim(mc)
+        self.dz = bool(mc.get("dz"))
+        if self.dz:
+            assert mc["proj"] and not mc["skip"] and not mc["ema"] and not mc.get("time"), "dz: needs --proj, no skip/ema/time"
+            self.register_buffer("mean", torch.zeros(NF)); self.register_buffer("std", torch.ones(NF))
+            P, self.diff = mc["proj"], mc["diff"]
+            self.inproj = nn.Sequential(nn.Linear(nin, P), nn.GELU(), nn.LayerNorm(P))
+            self.grus = nn.ModuleList([nn.GRU(P if i == 0 else H, H, batch_first=True) for i in range(L)])
+            self.drop = nn.Dropout(mc.get("dropout", 0.1))
+            self.head_norm = nn.LayerNorm(H + P)
+            self.head = nn.Sequential(nn.Linear(H + P, H), nn.GELU(), nn.Dropout(mc.get("dropout", 0.1)), nn.Linear(H, 2))
+            return
         self.proj = nn.Linear(nin, mc["proj"]) if mc["proj"] else None
         gin = mc["proj"] or nin
         self.grus = nn.ModuleList([nn.GRU(gin if i == 0 else H, H, batch_first=True) for i in range(L)])
@@ -63,6 +83,14 @@ class Net(nn.Module):
         self.head = nn.Linear(H + (NF if self.skip else 0), 2)
 
     def forward(self, f, hs):
+        if self.dz:
+            x = ((f[..., :NF] - self.mean) / self.std).clamp(-10.0, 10.0)
+            u = torch.cat([x, f[..., NF:2 * NF] / self.std], -1) if self.diff else x
+            z = self.inproj(u); o = z; new = []
+            for i, (gru, h) in enumerate(zip(self.grus, hs)):
+                o, h = gru(self.drop(o) if i else o, h)
+                new.append(h)
+            return self.head(self.head_norm(torch.cat([o, z], -1))), new
         z = self.proj(f) if self.proj is not None else f
         new = []
         for gru, h in zip(self.grus, hs):

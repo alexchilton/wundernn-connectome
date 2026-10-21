@@ -53,6 +53,9 @@ ap.add_argument("--diff", action="store_true", help="add x - x_prev to the input
 ap.add_argument("--ema", default="", help="comma list of EMA time constants; adds x - ema_T(x) per T")
 ap.add_argument("--proj", type=int, default=0, help="Linear input projection width (0 = none)")
 ap.add_argument("--skip", action="store_true", help="head also sees the raw row")
+ap.add_argument("--dz", action="store_true", help="dozken block design (model.Net docstring): standardised input, GELU+LayerNorm projection, "
+                "GRU dropout, MLP head on LayerNorm(GRU out, projection); needs --proj")
+ap.add_argument("--dropout", type=float, default=0.1, help="--dz only")
 ap.add_argument("--time", action="store_true", help="add log(1 + step) / log(20000) as an input")
 ap.add_argument("--loss-norm", choices=["chunk", "batch"], default="chunk",
                 help="chunk: divide each chunk's loss by its own weight sum; batch: by the batch's mean weight per chunk, "
@@ -97,6 +100,12 @@ rng = np.random.default_rng(a.seed)
 MC = model_cfg(vars(a))
 print("MODEL", json.dumps(MC), flush=True)
 model = Net(MC).to(dev)
+if MC.get("dz"):    # feature stats from 128 random train sequences, stored as buffers (exported with the weights)
+    xs = np.asarray(Xtr[np.sort(rng.choice(Xtr.shape[0], min(128, Xtr.shape[0]), replace=False))], dtype=np.float32).reshape(-1, Xtr.shape[2])
+    with torch.no_grad():
+        model.mean.copy_(torch.from_numpy(xs.mean(0))); model.std.copy_(torch.from_numpy(xs.std(0) + 1e-6))
+    print(f"dz feature stats: mean |m| {np.abs(xs.mean(0)).mean():.3f}, std range {xs.std(0).min():.3f}-{xs.std(0).max():.3f}", flush=True)
+    del xs
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
 ema_model = None
 if a.ema_weights:

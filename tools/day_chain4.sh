@@ -8,7 +8,7 @@
 cd ~/PycharmProjects/wundernn-connectome
 C=~/.local/bin/colab; S=${1:-wnn4}; D=/content/drive/MyDrive/wnn
 L=logs/overnight_final.log
-ARMS="c4000_lr1e3_s0 c4000_lr1e3_s1"
+ARMS="c4000_lr1e3_s0 c4000_lr1e3_s1 dz128_s0 dz128_s1"
 remote_done() { timeout 90 $C download -s $S /content/wnn/logs/$1.log logs/colab_$1.log < /dev/null > /dev/null 2>&1; grep -q "^EXEC EXIT" logs/colab_$1.log 2>/dev/null; }
 pull() { for a in "$@"; do mkdir -p out/$a; for f in best latest; do timeout 300 $C download -s $S /content/wnn/out/$a/$f.pt out/$a/.$f.tmp < /dev/null > /dev/null 2>&1 && mv out/$a/.$f.tmp out/$a/$f.pt; done; done; }
 wait_for() { for a in "$@"; do until remote_done $a; do pull $a; sleep 300; done; pull $a; echo "$(date +%H:%M) $a done: best $(grep -o 'WP [0-9.]*' logs/colab_$a.log | awk '{print $2}' | sort -r | head -1), pulled $(ls -la out/$a/best.pt 2>/dev/null | awk '{print $5}')" >> $L; done; }
@@ -31,10 +31,14 @@ for a in "$ARMS".split():
     if not os.path.islink(f"/content/wnn/out/{a}"):
         os.symlink(f"{D}/out/{a}", f"/content/wnn/out/{a}")
 base = ("cd /content/wnn && python -u src/train_gru.py --data out/data --train-name train --valid-name valid --n-valid 192 "
-        "--soft-mask --add-valid-from 192 --batch 64 --eval-every 48 --save-every 8 --resume --layers 2 "
-        "--hidden 128 --loss wmse --chunk 4000 --lr 1e-3 --epochs 6")
-for name, seed in [("c4000_lr1e3_s0", 0), ("c4000_lr1e3_s1", 1)]:
-    r = subprocess.run(f"{base} --seed {seed} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
+        "--soft-mask --add-valid-from 192 --batch 64 --eval-every 48 --save-every 8 --resume --layers 2 --hidden 128 --lr 1e-3")
+ours = "--loss wmse --chunk 4000 --epochs 6"
+# dozken block design at 128 (his reset2k recipe: proj 64, diff, 0.9 global Pearson + 0.1 wmse, reset 2000, chunk 1000,
+# wd 0.01, weight EMA 0.999, 5 epochs with best-eval selection; his runs peaked at epoch 3)
+dz = "--dz --proj 64 --diff --loss pearson --mse-weight 0.1 --state-reset 2000 --chunk 1000 --wd 0.01 --ema-weights 0.999 --epochs 5"
+for name, extra in [("c4000_lr1e3_s0", f"{ours} --seed 0"), ("c4000_lr1e3_s1", f"{ours} --seed 1"),
+                    ("dz128_s0", f"{dz} --seed 0"), ("dz128_s1", f"{dz} --seed 1")]:
+    r = subprocess.run(f"{base} {extra} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
     open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
 PY
 for try in 1 2 3; do
