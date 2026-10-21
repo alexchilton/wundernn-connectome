@@ -3,7 +3,7 @@
 import os, subprocess
 D = "/content/drive/MyDrive/wnn"
 os.makedirs(f"{D}/out", exist_ok=True)
-for a in ("c1000_lr1e3", "c2000_lr1e3", "c1000_lr1e3_s1", "c1000_lr1e3_e8", "day_dozken"):
+for a in ("c1000_lr1e3_e8", "day_dozken", "c2000_lr1e3_e8", "c1000_lr1e3_e8_s1"):
     src, dst = f"/content/wnn/out/{a}", f"{D}/out/{a}"
     os.makedirs(dst, exist_ok=True)
     if not os.path.islink(src):

@@ -32,20 +32,19 @@ cat > /tmp/wnn_day3.py <<'PY'
 import subprocess
 base = ("cd /content/wnn && python -u src/train_gru.py --data out/data --train-name train --valid-name valid --n-valid 192 "
         "--soft-mask --add-valid-from 192 --batch 64 --epochs 4 --eval-every 48 --save-every 8 --resume --seed 0 --hidden 128 --layers 2")
-for name, extra in [("c1000_lr1e3", "--loss wmse --chunk 1000 --lr 1e-3"),            # day wins combined (chunk1000 0.68689, lr1e3 0.68821)
-                    ("c2000_lr1e3", "--loss wmse --chunk 2000 --lr 1e-3"),            # does the chunk trend continue?
-                    ("c1000_lr1e3_s1", "--loss wmse --chunk 1000 --lr 1e-3 --seed 1"),
-                    ("c1000_lr1e3_e8", "--loss wmse --chunk 1000 --lr 1e-3 --epochs 8"),
+for name, extra in [("c1000_lr1e3_e8", "--loss wmse --chunk 1000 --lr 1e-3 --epochs 8"),       # both day wins, 8 epochs (both were still rising at epoch 4)
                     ("day_dozken", "--hidden 192 --proj 128 --diff --loss pearson --mse-weight 0.5 --state-reset 2000 "
-                                   "--chunk 1000 --lr 1e-3 --ema-weights 0.999 --epochs 5")]:   # control, rerun (died at epoch 2)
+                                   "--chunk 1000 --lr 1e-3 --ema-weights 0.999 --epochs 5"),   # control, rerun (died at epoch 2)
+                    ("c2000_lr1e3_e8", "--loss wmse --chunk 2000 --lr 1e-3 --epochs 8"),       # does the chunk trend continue?
+                    ("c1000_lr1e3_e8_s1", "--loss wmse --chunk 1000 --lr 1e-3 --epochs 8 --seed 1")]:  # seed check, and the second fused member
     r = subprocess.run(f"{base} {extra} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
     open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
 PY
 for try in 1 2 3; do
     $C exec -s $S -f /tmp/wnn_day3.py < /dev/null >> $L 2>&1 &
-    started c1000_lr1e3 && break
+    started c1000_lr1e3_e8 && break
     echo "$(date +%H:%M) day3 arms did not start (try $try), resubmitting" >> $L
 done
-wait_for c1000_lr1e3 c2000_lr1e3 c1000_lr1e3_s1 c1000_lr1e3_e8 day_dozken
+wait_for c1000_lr1e3_e8 day_dozken c2000_lr1e3_e8 c1000_lr1e3_e8_s1
 $C stop -s $S < /dev/null >> $L 2>&1
 echo "$(date +%H:%M) DAY CHAIN 3 DONE, colab session stopped" >> $L
