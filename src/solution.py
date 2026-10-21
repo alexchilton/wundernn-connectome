@@ -50,6 +50,7 @@ class PredictionModel:
                 b.bind_output(f"next_{n}", "cpu", 0, np.float32, list(v.shape), v.ctypes.data)
             self.binds.append(b)
         self.k = 0
+        self.slices = [(i, s["reset_slices"]) for i, s in enumerate(self.spec) if s.get("reset_slices")]
 
     def predict(self, data_point):
         self.x[...] = np.asarray(data_point.state, dtype=np.float32).reshape(1, 1, 112)
@@ -58,10 +59,16 @@ class PredictionModel:
             self.seq_ix = data_point.seq_ix
             for s, v in zip(self.spec, cur):
                 v[...] = np.tile(self.x, (1, 1, s.get("tile", 1))) if s["init"] == "x" else 0.0
-        elif self.state_reset and data_point.step_in_seq % self.state_reset == 0:
-            for s, v in zip(self.spec, cur):
-                if s["reset"]:
-                    v[...] = 0.0
+        else:
+            t = data_point.step_in_seq
+            if self.state_reset and t % self.state_reset == 0:
+                for s, v in zip(self.spec, cur):
+                    if s["reset"]:
+                        v[...] = 0.0
+            for i, slices in self.slices:          # fused members with their own reset period zero only their units
+                for every, lo, hi in slices:
+                    if t % every == 0:
+                        cur[i][..., lo:hi] = 0.0
         self.session.run_with_iobinding(self.binds[self.k])
         self.k ^= 1
         if not data_point.need_prediction:
