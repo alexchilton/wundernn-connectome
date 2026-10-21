@@ -46,5 +46,23 @@ for try in 1 2 3; do
     echo "$(date +%H:%M) day3 arms did not start (try $try), resubmitting" >> $L
 done
 wait_for c1000_lr1e3_e8 day_dozken c2000_lr1e3_e8 c1000_lr1e3_e8_s1
+# appended 16:25: the dozken-ish recipe at 128 wide (day_dozken 192 fused with e8 = 0.69017 held-out but 42 us/call,
+# ~75 min on the platform); at 128 the fused pair is 256 wide like the uploads that ran 44-47 min
+cat > /tmp/wnn_day3b.py <<'PY'
+import os, subprocess
+D = "/content/drive/MyDrive/wnn"
+os.makedirs(f"{D}/out/dzish128", exist_ok=True)
+if not os.path.islink("/content/wnn/out/dzish128"):
+    os.symlink(f"{D}/out/dzish128", "/content/wnn/out/dzish128")
+cmd = ("cd /content/wnn && python -u src/train_gru.py --data out/data --train-name train --valid-name valid --n-valid 192 "
+       "--soft-mask --add-valid-from 192 --batch 64 --eval-every 48 --save-every 8 --resume --seed 0 --layers 2 "
+       "--hidden 128 --proj 128 --diff --loss pearson --mse-weight 0.5 --state-reset 2000 --chunk 1000 --lr 1e-3 "
+       "--ema-weights 0.999 --epochs 5 --out out/dzish128 > /content/wnn/logs/dzish128.log 2>&1")
+r = subprocess.run(cmd, shell=True)
+open("/content/wnn/logs/dzish128.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
+PY
+$C exec -s $S -f /tmp/wnn_day3b.py < /dev/null >> $L 2>&1 &
+started dzish128 || echo "$(date +%H:%M) dzish128 did not start" >> $L
+wait_for dzish128
 $C stop -s $S < /dev/null >> $L 2>&1
 echo "$(date +%H:%M) DAY CHAIN 3 DONE, colab session stopped" >> $L
