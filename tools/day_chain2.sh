@@ -1,7 +1,7 @@
 #!/bin/bash
 # Day chain 2 (replaces the tail of day_chain.sh, whose remote arms keep running): wait for the four day arms,
 # pull them, then chunk follow-ups on the same session (data already staged), pull, stop.
-# Why: day_chunk1000 0.68689 vs full1 0.68310 (+0.0038, seed spread +-0.0012), epoch ends still rising.
+# Why: day_chunk1000 0.68689 and day_lr1e3 0.68821 vs full1 0.68310 (seed spread +-0.0012); both still rising at epoch ends.
 cd ~/PycharmProjects/wundernn-connectome
 C=~/.local/bin/colab
 L=logs/overnight_final.log
@@ -17,19 +17,19 @@ cat > /tmp/wnn_day2.py <<'PY'
 import subprocess
 base = ("cd /content/wnn && python -u src/train_gru.py --data out/data --train-name train --valid-name valid --n-valid 192 "
         "--soft-mask --add-valid-from 192 --batch 64 --epochs 4 --eval-every 48 --save-every 8 --resume --seed 0 --hidden 128 --layers 2 --loss wmse")
-for name, extra in [("c2000", "--chunk 2000"),                    # bigger chunk: is 1000 the end of the trend?
-                    ("c1000_s1", "--chunk 1000 --seed 1"),         # is the +0.0038 real, or seed 0 luck?
-                    ("c1000_e8", "--chunk 1000 --epochs 8"),       # longer schedule on the winner
-                    ("c5000", "--chunk 5000")]:                    # far end of the chunk axis
+for name, extra in [("c1000_lr1e3", "--chunk 1000 --lr 1e-3"),          # the two day wins combined (chunk1000 +0.0038, lr1e3 +0.0051)
+                    ("c2000_lr1e3", "--chunk 2000 --lr 1e-3"),          # does the chunk trend continue past 1000?
+                    ("c1000_lr1e3_s1", "--chunk 1000 --lr 1e-3 --seed 1"),  # seed check on the combination
+                    ("c1000_lr1e3_e8", "--chunk 1000 --lr 1e-3 --epochs 8")]:  # longer schedule on the combination
     r = subprocess.run(f"{base} {extra} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
     open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
 PY
 for try in 1 2 3; do
     $C exec -s wnn -f /tmp/wnn_day2.py < /dev/null >> $L 2>&1 &
-    started c2000 && break
+    started c1000_lr1e3 && break
     echo "$(date +%H:%M) day2 arms did not start (try $try), resubmitting" >> $L
 done
-wait_for c2000 c1000_s1 c1000_e8 c5000
-pull c2000 c1000_s1 c1000_e8 c5000
+wait_for c1000_lr1e3 c2000_lr1e3 c1000_lr1e3_s1 c1000_lr1e3_e8
+pull c1000_lr1e3 c2000_lr1e3 c1000_lr1e3_s1 c1000_lr1e3_e8
 $C stop -s wnn < /dev/null >> $L 2>&1
 echo "$(date +%H:%M) DAY CHAIN 2 DONE, colab session stopped" >> $L
