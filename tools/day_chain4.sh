@@ -11,18 +11,20 @@ L=logs/overnight_final.log
 ARMS="c4000_lr1e3_s0 c4000_lr1e3_s1 dz128_s0 dz128_s1"
 remote_done() { timeout 90 $C download -s $S /content/wnn/logs/$1.log logs/colab_$1.log < /dev/null > /dev/null 2>&1; grep -q "^EXEC EXIT" logs/colab_$1.log 2>/dev/null; }
 pull() { for a in "$@"; do mkdir -p out/$a; for f in best latest; do timeout 300 $C download -s $S /content/wnn/out/$a/$f.pt out/$a/.$f.tmp < /dev/null > /dev/null 2>&1 && mv out/$a/.$f.tmp out/$a/$f.pt; done; done; }
-wait_for() { for a in "$@"; do until remote_done $a; do pull $a; sleep 300; done; pull $a; echo "$(date +%H:%M) $a done: best $(grep -o 'WP [0-9.]*' logs/colab_$a.log | awk '{print $2}' | sort -r | head -1), pulled $(ls -la out/$a/best.pt 2>/dev/null | awk '{print $5}')" >> $L; done; }
+FAILED=0
+wait_for() { for a in "$@"; do until remote_done $a; do pull $a; sleep 300; done; pull $a; grep -q "^EXEC EXIT 0" logs/colab_$a.log || { FAILED=1; echo "$(date +%H:%M) $a FAILED: $(grep -m1 Error logs/colab_$a.log)" >> $L; }; echo "$(date +%H:%M) $a done: best $(grep -o 'WP [0-9.]*' logs/colab_$a.log | awk '{print $2}' | sort -r | head -1), pulled $(ls -la out/$a/best.pt 2>/dev/null | awk '{print $5}')" >> $L; done; }
 started() { for i in $(seq 1 20); do timeout 60 $C download -s $S /content/wnn/logs/$1.log logs/colab_$1.log < /dev/null > /dev/null 2>&1 && grep -q "batch 1/" logs/colab_$1.log && return 0; sleep 30; done; return 1; }
 
 echo "$(date +%H:%M) day chain 4 start (chunk 4000 pair)" >> $L
 timeout 60 $C sessions < /dev/null 2>&1 | grep -q "^\[$S\]" || { cd /tmp && timeout 600 $C new -s $S --gpu L4 < /dev/null >> ~/PycharmProjects/wundernn-connectome/$L 2>&1; cd ~/PycharmProjects/wundernn-connectome; }
 echo "$(date +%H:%M) $S up: waiting for Drive mount (colab drivemount -s $S)" >> $L
 until timeout 60 $C log -s $S < /dev/null 2>&1 | grep -q "drive_auth_success"; do sleep 60; done
-echo 'import os; [os.makedirs(d, exist_ok=True) for d in ("/content/wnn/src","/content/wnn/logs","/content/wnn/out")]; print("dirs ok")' | timeout 120 $C repl -s $S >> $L 2>&1
-for f in src/*.py; do timeout 120 $C upload -s $S $f /content/wnn/$f < /dev/null > /dev/null 2>&1 || echo "upload failed $f" >> $L; done
+echo 'import os; [os.makedirs(d, exist_ok=True) for d in ("/content/wnn/src","/content/wnn/logs","/content/wnn/out","/content/wnn/wnn_connectome_starterpack")]; print("dirs ok")' | timeout 120 $C repl -s $S >> $L 2>&1
+for f in src/*.py wnn_connectome_starterpack/utils.py; do timeout 120 $C upload -s $S $f /content/wnn/$f < /dev/null > /dev/null 2>&1 || echo "upload failed $f" >> $L; done
 cat > /tmp/wnn_day4.py <<PY
 import os, subprocess, time
 D = "$D"
+subprocess.run("pip -q install onnx > /content/wnn/logs/pip_onnx.log 2>&1", shell=True)   # the trainer exports ONNX at the end
 t = time.time()
 r = subprocess.run(f"cp -r {D}/data /content/wnn/out/data", shell=True)
 open("/content/wnn/logs/drive_restore.log", "w").write(f"cp rc {r.returncode} in {time.time() - t:.0f}s\n")
@@ -36,17 +38,21 @@ ours = "--loss wmse --chunk 4000 --epochs 6"
 # dozken block design at 128 (his reset2k recipe: proj 64, diff, 0.9 global Pearson + 0.1 wmse, reset 2000, chunk 1000,
 # wd 0.01, weight EMA 0.999, 5 epochs with best-eval selection; his runs peaked at epoch 3)
 dz = "--dz --proj 64 --diff --loss pearson --mse-weight 0.1 --state-reset 2000 --chunk 1000 --wd 0.01 --ema-weights 0.999 --epochs 5"
+smoke = subprocess.run(f"{base} {ours} --seed 0 --max-batches 1 --out out/smoke_day4 > /content/wnn/logs/smoke_day4.log 2>&1", shell=True)
+open("/content/wnn/logs/smoke_day4.log", "a").write(f"\nEXEC EXIT {smoke.returncode}\n")
+if smoke.returncode:
+    raise SystemExit("smoke failed: see logs/smoke_day4.log")
 for name, extra in [("c4000_lr1e3_s0", f"{ours} --seed 0"), ("c4000_lr1e3_s1", f"{ours} --seed 1"),
                     ("dz128_s0", f"{dz} --seed 0"), ("dz128_s1", f"{dz} --seed 1")]:
     r = subprocess.run(f"{base} {extra} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
     open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
 PY
-for try in 1 2 3; do
-    $C exec -s $S -f /tmp/wnn_day4.py < /dev/null >> $L 2>&1 &
-    started c4000_lr1e3_s0 && break
-    echo "$(date +%H:%M) day4 arms did not start (try $try), checking restore" >> $L
-    timeout 60 $C download -s $S /content/wnn/logs/drive_restore.log logs/colab_drive_restore_$S.log < /dev/null > /dev/null 2>&1; cat logs/colab_drive_restore_$S.log >> $L 2>/dev/null
-done
+$C exec -s $S -f /tmp/wnn_day4.py < /dev/null >> $L 2>&1 &
+echo "$(date +%H:%M) job submitted: Drive copy (~22 min), smoke, then arms" >> $L
+until timeout 60 $C download -s $S /content/wnn/logs/smoke_day4.log logs/colab_smoke_day4_$S.log < /dev/null > /dev/null 2>&1 && grep -q "^EXEC EXIT" logs/colab_smoke_day4_$S.log; do sleep 60; done
+grep -q "^EXEC EXIT 0" logs/colab_smoke_day4_$S.log || { echo "$(date +%H:%M) SMOKE FAILED, session $S kept: $(grep -m1 Error logs/colab_smoke_day4_$S.log)" >> $L; exit 1; }
+echo "$(date +%H:%M) smoke ok, arms running" >> $L
 wait_for $ARMS
+[ $FAILED = 1 ] && { echo "$(date +%H:%M) an arm FAILED, session $S kept for inspection" >> $L; exit 1; }
 $C stop -s $S < /dev/null >> $L 2>&1
 echo "$(date +%H:%M) DAY CHAIN 4 DONE, colab session stopped" >> $L

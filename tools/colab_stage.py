@@ -9,6 +9,7 @@ def run(cmd, log):
     r = subprocess.run(f"cd {W} && {cmd} > {W}/{log} 2>&1", shell=True)
     note(f"EXIT {r.returncode} {log}: " + open(f"{W}/{log}").read()[-300:].replace("\n", " | "))
     return r.returncode
+run("pip -q install onnx", "pip_onnx.log")   # train_gru exports ONNX at the end of every run
 note(f"START disk free {os.statvfs('/content').f_bavail * os.statvfs('/content').f_frsize / 1e9:.0f} GB")
 os.makedirs(f"{W}/wnn_connectome_starterpack/datasets", exist_ok=True); os.makedirs(f"{W}/out/data", exist_ok=True)
 Z = "https://files.wundernn.io/wnn_connectome_starterpack.zip"
