@@ -1,10 +1,10 @@
 """Fuse N GRU checkpoints into ONE graph whose output is exactly the mean of the members.
 
-The members may differ in hidden width, --diff, --proj, --skip and --state-reset (same number of layers, no --ema
-or --time inputs). Each GRU layer becomes one wide nn.GRU: layer 0 reads the concatenation of the members' own
+The members may differ in hidden width, --diff, --proj, --skip, --dz and --state-reset (same number of layers, no
+--ema or --time inputs). Each GRU layer becomes one wide nn.GRU: layer 0 reads the concatenation of the members' own
 inputs (raw row, or their projection of [row, row - prev]) with block-structured input weights; deeper layers and
-all recurrent weights are block-diagonal. The head averages the members' heads (skip members also read the raw
-row). A member with --state-reset zeroes only its own slice of the hidden state ("reset_slices" in meta.json).
+all recurrent weights are block-diagonal. Each member keeps its own input transform and head (dz: normalisation,
+GELU+LayerNorm projection, MLP head); the prediction is the mean of the member heads. A member with --state-reset zeroes only its own slice of the hidden state ("reset_slices" in meta.json).
 
 One wide op is faster than N ops in one graph: 256-wide 21.7 us/call vs 25.9 for two 128 ops on the M4
 (docs/fable-ideas.md round 2). fused s1+s2 scored 0.68588 held-out, 0.65625 public, 46 min on the platform.
@@ -35,11 +35,10 @@ any_diff = any(mc["diff"] for mc in mcs)
 class Fused(nn.Module):
     def __init__(self):
         super().__init__()
-        self.projs = nn.ModuleList([n.proj if n.proj is not None else nn.Identity() for n in nets])
+        self.nets = nn.ModuleList(nets)            # members' own input transforms and heads (GRUs replaced below)
         in_dims = [mc["proj"] or NF * (1 + int(mc["diff"])) for mc in mcs]
         self.in_offs = np.cumsum([0] + in_dims)
         self.grus = nn.ModuleList([nn.GRU(int(self.in_offs[-1]) if i == 0 else HT, HT, batch_first=True) for i in range(L)])
-        self.head = nn.Linear(HT + NF, 2)
         with torch.no_grad():
             for i, g in enumerate(self.grus):
                 for p in g.parameters():
@@ -53,21 +52,29 @@ class Fused(nn.Module):
                         g.weight_hh_l0[rows, o:o + H] = src.weight_hh_l0[srows]
                         g.bias_ih_l0[rows] = src.bias_ih_l0[srows]
                         g.bias_hh_l0[rows] = src.bias_hh_l0[srows]
-            self.head.weight.zero_(); self.head.bias.zero_()
-            for m, n in enumerate(nets):
-                o, H = int(offs[m]), Hs[m]
-                self.head.weight[:, o:o + H] += n.head.weight[:, :H] / M
-                if mcs[m]["skip"]:
-                    self.head.weight[:, HT:] += n.head.weight[:, H:] / M
-                self.head.bias += n.head.bias / M
+
+    def member_in(self, n, mc, x, d):
+        """The input member n feeds its first GRU (and what its head reads besides the GRU output)."""
+        if mc.get("dz"):
+            xs = ((x - n.mean) / n.std).clamp(-10.0, 10.0)
+            return n.inproj(torch.cat([xs, d / n.std], -1) if mc["diff"] else xs)
+        f = torch.cat([x, d], -1) if mc["diff"] else x
+        return n.proj(f) if n.proj is not None else f
+
+    def member_head(self, n, mc, o, u, x):
+        if mc.get("dz"):
+            return n.head(n.head_norm(torch.cat([o, u], -1)))
+        return n.head(torch.cat([o, x], -1) if mc["skip"] else o)
 
     def forward(self, x, d, hs):
         """x: raw rows (B, T, NF); d: x - previous row; hs: per-layer fused hidden states."""
-        u = torch.cat([proj(torch.cat([x, d], -1) if mc["diff"] else x) for proj, mc in zip(self.projs, mcs)], -1)
-        new = []
+        us = [self.member_in(n, mc, x, d) for n, mc in zip(self.nets, mcs)]
+        o, new = torch.cat(us, -1), []
         for g, h in zip(self.grus, hs):
-            u, h = g(u, h); new.append(h)
-        return self.head(torch.cat([u, x], -1)), new
+            o, h = g(o, h); new.append(h)
+        preds = [self.member_head(n, mc, o[..., int(off):int(off) + H], u, x)
+                 for n, mc, u, off, H in zip(self.nets, mcs, us, offs, Hs)]
+        return sum(preds) / M, new
 
 
 class Step(nn.Module):
