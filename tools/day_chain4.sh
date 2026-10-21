@@ -18,7 +18,9 @@ started() { for i in $(seq 1 20); do timeout 60 $C download -s $S /content/wnn/l
 echo "$(date +%H:%M) day chain 4 start (chunk 4000 pair)" >> $L
 timeout 60 $C sessions < /dev/null 2>&1 | grep -q "^\[$S\]" || { cd /tmp && timeout 600 $C new -s $S --gpu L4 < /dev/null >> ~/PycharmProjects/wundernn-connectome/$L 2>&1; cd ~/PycharmProjects/wundernn-connectome; }
 echo "$(date +%H:%M) $S up: waiting for Drive mount (colab drivemount -s $S)" >> $L
-until timeout 60 $C log -s $S < /dev/null 2>&1 | grep -q "drive_auth_success"; do sleep 60; done
+# the session log is keyed by name and keeps an earlier session's auth events: test the mount itself
+until timeout 60 $C ls -s $S $D/data < /dev/null 2>&1 | grep -q "train_X.npy"; do sleep 60; done
+echo "$(date +%H:%M) Drive mounted on $S" >> $L
 echo 'import os; [os.makedirs(d, exist_ok=True) for d in ("/content/wnn/src","/content/wnn/logs","/content/wnn/out","/content/wnn/wnn_connectome_starterpack")]; print("dirs ok")' | timeout 120 $C repl -s $S >> $L 2>&1
 for f in src/*.py wnn_connectome_starterpack/utils.py; do timeout 120 $C upload -s $S $f /content/wnn/$f < /dev/null > /dev/null 2>&1 || echo "upload failed $f" >> $L; done
 cat > /tmp/wnn_day4.py <<PY
@@ -47,6 +49,7 @@ for name, extra in [("c4000_lr1e3_s0", f"{ours} --seed 0"), ("c4000_lr1e3_s1", f
     r = subprocess.run(f"{base} {extra} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
     open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
 PY
+timeout 60 $C rm -s $S /content/wnn/logs/smoke_day4.log < /dev/null > /dev/null 2>&1; rm -f logs/colab_smoke_day4_$S.log   # no stale marker from a previous try
 $C exec -s $S -f /tmp/wnn_day4.py < /dev/null >> $L 2>&1 &
 echo "$(date +%H:%M) job submitted: Drive copy (~22 min), smoke, then arms" >> $L
 until timeout 60 $C download -s $S /content/wnn/logs/smoke_day4.log logs/colab_smoke_day4_$S.log < /dev/null > /dev/null 2>&1 && grep -q "^EXEC EXIT" logs/colab_smoke_day4_$S.log; do sleep 60; done
