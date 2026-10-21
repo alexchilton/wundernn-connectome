@@ -11,14 +11,19 @@ started() { for i in $(seq 1 20); do timeout 60 $C download -s wnn /content/wnn/
 echo "$(date +%H:%M) day chain start" >> $L
 wait_for morning_norm morning_ema8
 pull morning_norm morning_ema8
-$C upload -s wnn src/train_gru.py /content/wnn/src/train_gru.py < /dev/null >> $L 2>&1
+for f in src/model.py src/train_gru.py; do $C upload -s wnn $f /content/wnn/$f < /dev/null >> $L 2>&1; done
 cat > /tmp/wnn_day.py <<'PY'
 import subprocess
 base = ("cd /content/wnn && python -u src/train_gru.py --data out/data --train-name train --valid-name valid --n-valid 192 "
         "--soft-mask --add-valid-from 192 --batch 64 --epochs 4 --eval-every 48 --save-every 8 --resume --seed 0 --hidden 128 --layers 2")
+# later flags win in argparse, so an arm's own --hidden/--epochs override the base
 for name, extra in [("day_pearson", "--loss pearson --mse-weight 0.5 --chunk 500"),
                     ("day_chunk1000", "--loss wmse --chunk 1000"),
-                    ("day_lr1e3", "--loss wmse --chunk 500 --lr 1e-3")]:
+                    ("day_lr1e3", "--loss wmse --chunk 500 --lr 1e-3"),
+                    # control: dozken's final recipe (reset2k, public 0.6569) rebuilt with our code; mse weight and
+                    # one-cycle schedule are our approximations of settings their notes do not state exactly
+                    ("day_dozken", "--hidden 192 --proj 128 --diff --loss pearson --mse-weight 0.5 --state-reset 2000 "
+                                   "--chunk 1000 --lr 1e-3 --ema-weights 0.999 --epochs 5")]:
     r = subprocess.run(f"{base} {extra} --out out/{name} > /content/wnn/logs/{name}.log 2>&1", shell=True)
     open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
 PY
@@ -27,7 +32,7 @@ for try in 1 2 3; do
     started day_pearson && break
     echo "$(date +%H:%M) day arms did not start (try $try), resubmitting" >> $L
 done
-wait_for day_pearson day_chunk1000 day_lr1e3
-pull day_pearson day_chunk1000 day_lr1e3
+wait_for day_pearson day_chunk1000 day_lr1e3 day_dozken
+pull day_pearson day_chunk1000 day_lr1e3 day_dozken
 $C stop -s wnn < /dev/null >> $L 2>&1
 echo "$(date +%H:%M) DAY CHAIN DONE, colab session stopped" >> $L
