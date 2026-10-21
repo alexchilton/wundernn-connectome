@@ -30,7 +30,9 @@ ap.add_argument("--valid-name", default="valid")
 ap.add_argument("--out", required=True)
 ap.add_argument("--hidden", type=int, default=128)
 ap.add_argument("--layers", type=int, default=2)
-ap.add_argument("--loss", choices=["mse", "wmse"], default="wmse")
+ap.add_argument("--loss", choices=["mse", "wmse", "pearson"], default="wmse",
+                help="pearson: 1 - global weighted Pearson over the batch prefix (running stats, earlier chunks detached) + --mse-weight x wmse")
+ap.add_argument("--mse-weight", type=float, default=0.5, help="weight of the wmse term in --loss pearson")
 ap.add_argument("--chunk", type=int, default=500)
 ap.add_argument("--batch", type=int, default=64)
 ap.add_argument("--epochs", type=int, default=4)
@@ -160,12 +162,35 @@ def evaluate():
 
 def loss_fn(p, y, first_step, rw, denom=None):
     y = y.clamp(-2, 2)
-    w = y.abs() if a.loss == "wmse" else torch.ones_like(y)
+    w = y.abs() if a.loss in ("wmse", "pearson") else torch.ones_like(y)
     w = w * rw[:, :, None]
     if first_step < WARMUP:
         keep = torch.arange(first_step, first_step + y.shape[1], device=y.device) >= WARMUP
         w = w * keep[None, :, None]
     return (w * (p - y) ** 2).sum() / (denom if denom is not None else w.sum().clamp_min(1e-6))
+
+
+def chunk_weights(y, first_step, rw):
+    """The scorer's row weights |clip(y)| times the mask weight, zero on warm-up rows; shape like y."""
+    w = y.clamp(-2, 2).abs() * rw[:, :, None]
+    if first_step < WARMUP:
+        keep = torch.arange(first_step, first_step + y.shape[1], device=y.device) >= WARMUP
+        w = w * keep[None, :, None]
+    return w
+
+
+def pearson_loss(p, y, w, prev):
+    """1 - weighted Pearson per target, pooled over all sequences and all rows of the batch seen so far.
+    prev holds the detached sums of earlier chunks; the current chunk carries the gradient."""
+    y = y.clamp(-2, 2); pc = p.clamp(-2, 2)
+    cur = torch.stack([w.sum((0, 1)), (w * y).sum((0, 1)), (w * pc).sum((0, 1)),
+                       (w * y * y).sum((0, 1)), (w * pc * pc).sum((0, 1)), (w * y * pc).sum((0, 1))])
+    S = cur + prev
+    W = S[0].clamp_min(1e-6)
+    my, mp = S[1] / W, S[2] / W
+    vy = (S[3] / W - my * my).clamp_min(1e-8); vp = (S[4] / W - mp * mp).clamp_min(1e-8)
+    corr = (S[5] / W - my * mp) / torch.sqrt(vy * vp)
+    return 1 - corr.mean(), cur.detach()
 
 
 t0 = time.time()
@@ -180,6 +205,7 @@ while state["epoch"] < a.epochs:
         hs = [torch.zeros(1, len(idx), a.hidden, device=dev) for _ in range(a.layers)]
         tot = 0.0
         denom = None
+        prev = torch.zeros(6, 2, device=dev)
         if a.loss_norm == "batch":   # the batch's total loss weight (after warm-up and mask) spread evenly over its chunks
             wy = y.clamp(-2, 2).abs() if a.loss == "wmse" else torch.ones_like(y)
             wy = wy * rw[:, :, None]; wy[:, :WARMUP] = 0
@@ -190,6 +216,10 @@ while state["epoch"] < a.epochs:
             p, hs = model(x[:, c:c + a.chunk], hs)
             hs = [h.detach() for h in hs]
             loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk], denom)
+            if a.loss == "pearson":
+                pl, cur = pearson_loss(p, y[:, c:c + a.chunk], chunk_weights(y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk]), prev)
+                prev = prev + cur
+                loss = pl + a.mse_weight * loss
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
