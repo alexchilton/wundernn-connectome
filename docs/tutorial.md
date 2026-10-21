@@ -243,6 +243,16 @@ The mask model runs once over the training file, offline, and writes P(scored) f
 It is **not** part of the submission and costs nothing at scoring time.
 The main model's loss then weights each row by |y| × P(scored) (step 2).
 
+**What it bought, measured on the board** (same 600 training sequences, one change at a time):
+
+| loss weights each row by | held-out | public |
+|---|---|---|
+| 1 (plain MSE) | 0.64906 | 0.61346 |
+| \|y\| | 0.66197 | 0.63279 |
+| \|y\| × P(scored) | 0.67231 | 0.63693 |
+
+The mask adds about +0.004 public on top of the |y| weighting.
+
 ### 5b. Step 2: label train and weight the loss
 
 The mask model writes P(scored) for every training row.
@@ -259,17 +269,49 @@ Valid sequences 192 onward join the training data with their true mask; sequence
 
 ![truncated backprop](fig/09_tbptt.png)
 
-A batch is several whole 20,000-row sequences.
-We walk through them 500 rows at a time:
+A batch is 64 whole 20,000-row sequences.
+We cannot backpropagate through 20,000 steps at once: the memory needed grows with every step.
+So we walk through the sequences in **chunks**:
 
-- the memory is **carried** from one chunk to the next, as at inference;
-- the gradient is **cut** at each chunk boundary, so memory use stays small (this is "truncated backpropagation through time");
-- the memory is **reset to zero every 2,000 rows** (`--state-reset 2000`), in training and at inference alike.
+- the memory (hidden state) is **carried** from one chunk into the next, exactly as at inference;
+- the gradient is **cut** at each chunk edge, so the network only learns from errors inside the current chunk.
+  This is called truncated backpropagation through time.
 
-Why reset?
-dozken measured that the model's memory degrades over a long sequence: setting it to zero halfway through a sequence *improved* the second half.
-A reset every 2,000 rows keeps the model in conditions it knows, and gives a consistent output level across the sequence, which the global metric rewards (section 2a).
-Their best single model used exactly this.
+### 5c'. Chunk and reset are two different knobs
+
+Beginners (and we, once) mix these up.
+They sound alike and do opposite things:
+
+![chunk vs reset](fig/13_chunk_vs_reset.png)
+
+| | **chunk** (`--chunk 1000`) | **reset** (`--state-reset 2000`) |
+|---|---|---|
+| when it acts | training only | training **and** inference |
+| what it does | stops the gradient at the chunk edge | sets the memory to zero |
+| the memory at inference | runs unbroken through all 20,000 rows | forgets everything every 2,000 rows |
+| what a bigger value buys | the model learns how its memory behaves further ahead | longer memory, more drift |
+
+A counterexample makes the difference concrete.
+Take a model trained with chunk 500.
+At row 15,000 its memory has been running for 15,000 steps, but no gradient ever looked more than 500 steps back.
+So nothing in training ever told it what its memory looks like after thousands of steps: that regime is untrained.
+dozken measured exactly this: the score fell quarter by quarter (0.70 → 0.64), and a zeroed memory beat the model's own 10,000-row memory.
+
+There are two cures, and they pull in opposite directions:
+
+1. **Longer chunks**: train the long-horizon behaviour so the memory stays useful.
+2. **Resets**: never let the memory run long, so it never reaches the untrained regime.
+
+Measured (held-out, full training data, one change each against full1 at 0.68310, seed spread ±0.0012):
+
+| change | held-out | verdict |
+|---|---|---|
+| chunk 500 → 1000 | 0.68689 | +0.0038, real |
+| reset every 2000 | 0.68378 | +0.0007, noise |
+| dozken, chunk 1000 → 4000 (his older loss) | +0.0164 | his measurement |
+
+For our model, longer chunks help and resets do not.
+dozken's later best models used both; his notes found resets of 2000 and 4000 equal.
 
 ### 5d. Step 4: export and submit
 
@@ -299,7 +341,54 @@ Checked (*measured*): the ONNX model run row by row in `solution.py` gives the s
 
 ---
 
-## 7. Where we stand (2026-10-20, 21:10)
+## 7. Averaging two models inside one: fusion
+
+### 7a. Why average at all
+
+Two models trained the same way but from different random starts make slightly different mistakes.
+Average their predictions and part of each one's error cancels.
+Measured on held-out data: two seeds of the same recipe gain about +0.002 to +0.003, three or more add nothing more (their errors are 98% correlated, so there is little left to cancel).
+
+### 7b. Why not simply run both
+
+The platform gives one CPU and 60 minutes for 39.4 million rows.
+Two separate GRUs mean two calls into ONNX Runtime per row, each with its own fixed overhead.
+Measured on the M4: one 128 GRU 13.9 µs per row, two in one graph 25.9 µs.
+
+### 7c. The trick: two GRUs side by side in one op
+
+A GRU's memory update is a matrix multiplication: new memory = f(W × old memory + U × input).
+Put model A's matrix in the top-left corner of a bigger matrix, model B's in the bottom-right, and zeros everywhere else:
+
+![fused weight matrix](fig/14_fused_matrix.png)
+
+The zeros mean A's memory units never read B's and B's never read A's.
+So one 256-wide GRU computes exactly what the two 128-wide GRUs compute, in one op, with one overhead.
+Each model keeps its own head (the last layer that turns memory into a prediction); the two answers are averaged.
+Models that reset their memory still can: `meta.json` lists which slice of the fused memory to zero, and every how many rows (`reset_slices`).
+`src/fuse.py` builds the fused model and refuses to write it unless the fused output matches the two models run separately to within 1e-4; measured differences are about 1e-6.
+
+### 7d. What it bought
+
+![fusion gain](fig/15_fusion_gain.png)
+
+The held-out gain carried to the public board almost one for one: s1 + s2 fused went from 0.68588 held-out to 0.65625 public, our best at the time.
+
+### 7e. The catch: time
+
+![platform time](fig/16_platform_time.png)
+
+The fused 256 model runs 46–47 minutes on the platform against 26 for one 128.
+That is 2.65× the M4 time, slightly worse than the 2.54× of a single 128: the bigger weight matrix fits the platform's CPU cache less well.
+Two fused models fit; three (384 wide, 47 µs per row on the M4) would not.
+
+A lesson in measuring the right thing: we rewrote `solution.py` to keep its buffers between calls (ONNX Runtime IOBinding), which cut the M4 time per row by 24%.
+On the platform it saved nothing (46m12s before, 47m06s after).
+The platform's time goes into the GRU maths, not our Python.
+
+---
+
+## 8. Where we stand (2026-10-21, 15:30)
 
 | model | held-out valid 0–191 | full valid | public board |
 |---|---|---|---|
@@ -309,6 +398,9 @@ Checked (*measured*): the ONNX model run row by row in `solution.py` gives the s
 | GRU, \|y\| × P(scored) soft mask, 600 train seqs | 0.67231 (epoch 4) | — | 0.63693 |
 | GRU + soft mask + valid + reset 2000 | next | — | — |
 | GRU soft mask, full training set (Colab L4, 4 epochs) | 0.68310 | — | **0.65392** |
+| two seeds of that, fused (section 7) | 0.68588 | — | **0.65625** (46m12s) |
+| seed 1 + reset2k, fused | 0.68655 | — | 0.65599 (47m06s) |
+| chunk 1000 + lr 1e-3 (8 epochs) + seed 1, fused | 0.68858 | — | pending (2026-10-21 15:20) |
 
 For scale: dozken's best single model reached 0.657 public on 2026-09-16, when #1 was 0.660.
 Their local-to-public offset was about −0.03; ours, from the baseline, is −0.026 (held-out 0.61987 → public 0.59353).
