@@ -7,7 +7,7 @@ all recurrent weights are block-diagonal. Each member keeps its own input transf
 GELU+LayerNorm projection, MLP head); the prediction is the mean of the member heads. A member with --state-reset zeroes only its own slice of the hidden state ("reset_slices" in meta.json).
 
 One wide op is faster than N ops in one graph: 256-wide 21.7 us/call vs 25.9 for two 128 ops on the M4
-(docs/fable-ideas.md round 2). fused s1+s2 scored 0.68588 held-out, 0.65625 public, 46 min on the platform.
+(docs/archive/fable-ideas.md round 2). fused s1+s2 scored 0.68588 held-out, 0.65625 public, 46 min on the platform.
 
     python src/fuse.py out/fused_x out/final_s1/best.pt out/day_dozken/best.pt [...]
 """

@@ -62,6 +62,10 @@ ap.add_argument("--loss-norm", choices=["chunk", "batch"], default="chunk",
                      "so chunks count in proportion to their weight mass, as rows do in the global metric")
 ap.add_argument("--ema-weights", type=float, default=0.0, help="keep an EMA of the weights with this decay per optimiser step; "
                 "evaluate, save as best and export the EMA weights (0 = off)")
+ap.add_argument("--teacher", default="", help="comma list of checkpoints; their mean prediction (frozen, same chunks and state "
+                "handling as at inference) is mixed into the target")
+ap.add_argument("--distill", type=float, default=0.0, help="target = distill x teacher mean + (1 - distill) x clip(y); "
+                "row weights stay |clip(y)|")
 ap.add_argument("--max-batches", type=int, default=0, help="smoke test: stop after this many batches")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
@@ -91,7 +95,8 @@ if a.add_valid_from:
     sources.append((Xv[a.add_valid_from:], Yv[a.add_valid_from:], Mv[a.add_valid_from:]))
 pool = [(si, i) for si, (X, _, _) in enumerate(sources) for i in range(X.shape[0])]
 if a.state_reset:
-    assert a.state_reset % a.chunk == 0 and 2000 % a.state_reset == 0 or a.state_reset % 2000 == 0, "state-reset must align with chunk and eval chunks"
+    assert a.chunk <= a.state_reset and a.state_reset % a.chunk == 0 and (2000 % a.state_reset == 0 or a.state_reset % 2000 == 0), \
+        "state-reset must be a multiple of chunk and align with the 2000-row eval chunks"
 print(f"train pool {len(pool)} seqs ({' + '.join(str(X.shape[0]) for X, _, _ in sources)}), soft mask {a.soft_mask}, "
       f"state reset {a.state_reset}, valid {Xva.shape[0]} seqs (mask {'yes' if Mva is not None else 'no'})", flush=True)
 
@@ -106,6 +111,16 @@ if MC.get("dz"):    # feature stats from 128 random train sequences, stored as b
         model.mean.copy_(torch.from_numpy(xs.mean(0))); model.std.copy_(torch.from_numpy(xs.std(0) + 1e-6))
     print(f"dz feature stats: mean |m| {np.abs(xs.mean(0)).mean():.3f}, std range {xs.std(0).min():.3f}-{xs.std(0).max():.3f}", flush=True)
     del xs
+teachers = []
+if a.teacher:
+    assert a.distill > 0 and a.loss != "pearson", "--teacher needs --distill > 0 and a wmse/mse loss"
+    for tp in a.teacher.split(","):
+        tck = torch.load(tp, map_location="cpu", weights_only=False); tmc = model_cfg(tck["cfg"])
+        tn = Net(tmc); tn.load_state_dict(tck["model"]); tn.to(dev).eval()
+        for q in tn.parameters():
+            q.requires_grad_(False)
+        teachers.append((tn, tmc))
+    print(f"TEACHERS {len(teachers)}: {a.teacher}, distill {a.distill}", flush=True)
 opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
 ema_model = None
 if a.ema_weights:
@@ -169,9 +184,11 @@ def evaluate():
     return float(np.mean(wp)), wp
 
 
-def loss_fn(p, y, first_step, rw, denom=None):
+def loss_fn(p, y, first_step, rw, denom=None, tgt=None):
     y = y.clamp(-2, 2)
     w = y.abs() if a.loss in ("wmse", "pearson") else torch.ones_like(y)
+    if tgt is not None:
+        y = tgt
     w = w * rw[:, :, None]
     if first_step < WARMUP:
         keep = torch.arange(first_step, first_step + y.shape[1], device=y.device) >= WARMUP
@@ -207,7 +224,10 @@ done_batches = state["epoch"] * n_batches + state["batch"]
 while state["epoch"] < a.epochs:
     while state["batch"] < n_batches:
         idx = sorted(pool[j] for j in state["perm"][state["batch"] * a.batch:(state["batch"] + 1) * a.batch])
-        x = torch.from_numpy(make_feats(np.stack([np.asarray(sources[si][0][i], dtype=np.float32) for si, i in idx]), MC)).to(dev)
+        raw = np.stack([np.asarray(sources[si][0][i], dtype=np.float32) for si, i in idx])
+        x = torch.from_numpy(make_feats(raw, MC)).to(dev)
+        tx = [torch.from_numpy(make_feats(raw, tmc)).to(dev) for _, tmc in teachers]
+        ths = [[torch.zeros(1, len(idx), tmc["hidden"], device=dev) for _ in range(tmc["layers"])] for _, tmc in teachers]
         y = torch.from_numpy(np.stack([np.asarray(sources[si][1][i], dtype=np.float32) for si, i in idx])).to(dev)
         rw = torch.from_numpy(np.stack([np.ones(L_SEQ, np.float32) if sources[si][2] is None
                                         else np.asarray(sources[si][2][i], dtype=np.float32) for si, i in idx])).to(dev)
@@ -224,7 +244,16 @@ while state["epoch"] < a.epochs:
                 hs = [torch.zeros_like(h) for h in hs]
             p, hs = model(x[:, c:c + a.chunk], hs)
             hs = [h.detach() for h in hs]
-            loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk], denom)
+            tgt = None
+            if teachers:
+                with torch.no_grad():
+                    tps = []
+                    for k, (tn, tmc) in enumerate(teachers):
+                        if tmc["state_reset"] and c % tmc["state_reset"] == 0:
+                            ths[k] = [torch.zeros_like(h) for h in ths[k]]
+                        tpk, ths[k] = tn(tx[k][:, c:c + a.chunk], ths[k]); tps.append(tpk)
+                    tgt = a.distill * torch.stack(tps).mean(0) + (1 - a.distill) * y[:, c:c + a.chunk].clamp(-2, 2)
+            loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk], denom, tgt)
             if a.loss == "pearson":
                 pl, cur = pearson_loss(p, y[:, c:c + a.chunk], chunk_weights(y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk]), prev)
                 prev = prev + cur
