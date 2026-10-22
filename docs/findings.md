@@ -49,6 +49,8 @@ Each line is a change that measurably helped, with the number and its source.
 
 ## 3. Measured, null or worse
 
+- Distillation, teacher mean(e8, old final_s1), --distill 0.5, plain 128 on the e8 recipe (tools/day_chain7.sh): student s0 single best 0.68821 / last 0.68646 vs e8 0.68703 / 0.68542 (+0.001, at the ceiling); fused with dz96p32_s1 it scores 0.69031 (best) / 0.68964 (last) vs e8 + dz96p32_s1 0.69043: the single-model gain does not survive pairing (logs/fuse_stu_dz96s1.log).
+
 Each tested idea that did not help, with the number and source.
 
 - Position-weighted blend, e8 + dz128_s0, 2000-step segments: cross-fitted gain -0.00054 (position-blend-2026-10-22.md, logs/pos_blend_e8_dz128.log).
