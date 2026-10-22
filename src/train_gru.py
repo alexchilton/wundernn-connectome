@@ -56,6 +56,10 @@ ap.add_argument("--skip", action="store_true", help="head also sees the raw row"
 ap.add_argument("--dz", action="store_true", help="dozken block design (model.Net docstring): standardised input, GELU+LayerNorm projection, "
                 "GRU dropout, MLP head on LayerNorm(GRU out, projection); needs --proj")
 ap.add_argument("--dropout", type=float, default=0.1, help="--dz only")
+ap.add_argument("--tf", action="store_true", help="causal local-window transformer instead of the GRU (model.TFNet; "
+                "--hidden = width, --layers = blocks; not exported to ONNX)")
+ap.add_argument("--window", type=int, default=256, help="--tf: attention window in rows")
+ap.add_argument("--heads", type=int, default=4, help="--tf: attention heads")
 ap.add_argument("--time", action="store_true", help="add log(1 + step) / log(20000) as an input")
 ap.add_argument("--loss-norm", choices=["chunk", "batch"], default="chunk",
                 help="chunk: divide each chunk's loss by its own weight sum; batch: by the batch's mean weight per chunk, "
@@ -94,6 +98,7 @@ if a.add_valid_from:
     Xv, Yv, Mv = load(a.valid_name, 0)
     sources.append((Xv[a.add_valid_from:], Yv[a.add_valid_from:], Mv[a.add_valid_from:]))
 pool = [(si, i) for si, (X, _, _) in enumerate(sources) for i in range(X.shape[0])]
+assert not (a.tf and a.state_reset), "--tf keeps a window cache, not a resettable state"
 if a.state_reset:
     assert a.chunk <= a.state_reset and a.state_reset % a.chunk == 0 and (2000 % a.state_reset == 0 or a.state_reset % 2000 == 0), \
         "state-reset must be a multiple of chunk and align with the 2000-row eval chunks"
@@ -105,7 +110,7 @@ rng = np.random.default_rng(a.seed)
 MC = model_cfg(vars(a))
 print("MODEL", json.dumps(MC), flush=True)
 model = Net(MC).to(dev)
-if MC.get("dz"):    # feature stats from 128 random train sequences, stored as buffers (exported with the weights)
+if MC.get("dz") or MC.get("tf"):    # feature stats from 128 random train sequences, stored as buffers (exported with the weights)
     xs = np.asarray(Xtr[np.sort(rng.choice(Xtr.shape[0], min(128, Xtr.shape[0]), replace=False))], dtype=np.float32).reshape(-1, Xtr.shape[2])
     with torch.no_grad():
         model.mean.copy_(torch.from_numpy(xs.mean(0))); model.std.copy_(torch.from_numpy(xs.std(0) + 1e-6))
@@ -292,6 +297,7 @@ while state["epoch"] < a.epochs:
 # export best (or latest for a smoke run) to ONNX
 src = f"{a.out}/best.pt" if os.path.exists(f"{a.out}/best.pt") else f"{a.out}/latest.pt"
 model.load_state_dict(torch.load(src, map_location="cpu", weights_only=False)["model"])   # EMA weights if --ema-weights
-export(model, MC, a.out, dict(best_wp=state["best"], source=src, cfg=vars(a)))
-print(f"EXPORTED {a.out}/model.onnx from {src}, best WP {state['best']:.5f}", flush=True)
+if not MC.get("tf"):
+    export(model, MC, a.out, dict(best_wp=state["best"], source=src, cfg=vars(a)))
+    print(f"EXPORTED {a.out}/model.onnx from {src}, best WP {state['best']:.5f}", flush=True)
 print("TRAIN DONE", flush=True)

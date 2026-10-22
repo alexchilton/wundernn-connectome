@@ -31,6 +31,8 @@ def model_cfg(c):
               proj=int(c.get("proj", 0) or 0), skip=bool(c.get("skip", False)), time=bool(c.get("time", False)), state_reset=int(c.get("state_reset", 0) or 0))
     if c.get("dz"):     # only present when set, so configs of older checkpoints compare equal
         mc.update(dz=True, dropout=float(c.get("dropout", 0.1)))
+    if c.get("tf"):
+        mc.update(tf=True, window=int(c.get("window", 256)), heads=int(c.get("heads", 4)), dropout=float(c.get("dropout", 0.1)))
     return mc
 
 
@@ -55,12 +57,80 @@ def make_feats(x, mc):
     return np.concatenate(parts, -1).astype(np.float32) if len(parts) > 1 else x
 
 
+class TFBlock(nn.Module):
+    """Pre-LN causal self-attention over [cache of the previous W layer inputs, this chunk], ALiBi distance bias,
+    then a 4x GELU MLP."""
+
+    def __init__(self, d, heads, drop):
+        super().__init__()
+        self.h = heads
+        self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
+        self.qkv, self.out = nn.Linear(d, 3 * d), nn.Linear(d, d)
+        self.mlp = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x, cache, bias):
+        B, C, d = x.shape
+        u = torch.cat([cache, x], 1) if cache is not None else x
+        q = self.qkv(self.ln1(x))[..., :d]
+        kv = self.qkv(self.ln1(u))[..., d:]
+        k, v = kv[..., :d], kv[..., d:]
+        sh = lambda t: t.view(B, t.shape[1], self.h, d // self.h).transpose(1, 2)
+        a = nn.functional.scaled_dot_product_attention(sh(q), sh(k), sh(v), attn_mask=bias)
+        x = x + self.drop(self.out(a.transpose(1, 2).reshape(B, C, d)))
+        return x + self.drop(self.mlp(self.ln2(x)))
+
+
+class TFNet(nn.Module):
+    """Causal local-window transformer (teacher / research model, not exported). The state per layer is the last
+    W inputs of that layer; a state that is not (B, W, d) (the GRU-shaped zeros the trainers start with) means
+    'sequence start, empty cache'."""
+
+    def __init__(self, mc):
+        super().__init__()
+        d, L, self.W, self.h = mc["hidden"], mc["layers"], mc["window"], mc["heads"]
+        self.diff = mc["diff"]
+        self.register_buffer("mean", torch.zeros(NF)); self.register_buffer("std", torch.ones(NF))
+        self.inp = nn.Linear(feat_dim(mc), d)
+        self.blocks = nn.ModuleList([TFBlock(d, self.h, mc.get("dropout", 0.1)) for _ in range(L)])
+        self.lnf, self.head = nn.LayerNorm(d), nn.Linear(d, 2)
+        self.register_buffer("slopes", torch.tensor([2.0 ** (-8.0 * (i + 1) / self.h) for i in range(self.h)]))
+
+    def bias(self, C, P, dev):
+        i = torch.arange(C, device=dev)[:, None] + P                 # query time, P = cached positions before it
+        j = torch.arange(C + P, device=dev)[None, :]
+        dist = (i - j).float()
+        ok = (dist >= 0) & (dist <= self.W)
+        b = -self.slopes[:, None, None] * dist[None]
+        return b.masked_fill(~ok[None], float("-inf"))[None]           # (1, heads, C, C + P)
+
+    def forward(self, f, hs):
+        x = ((f[..., :NF] - self.mean) / self.std).clamp(-10.0, 10.0)
+        if self.diff:
+            x = torch.cat([x, f[..., NF:2 * NF] / self.std], -1)
+        z = self.inp(torch.cat([x, f[..., x.shape[-1]:]], -1) if f.shape[-1] > x.shape[-1] else x)
+        B, C, _ = z.shape
+        caches = [h if (h.dim() == 3 and h.shape[0] == B and h.shape[1] == self.W) else None for h in hs]
+        P = self.W if caches[0] is not None else 0
+        bias = self.bias(C, P, z.device).to(z.dtype)
+        new = []
+        for blk, c in zip(self.blocks, caches):
+            u = torch.cat([c, z], 1) if c is not None else z
+            assert u.shape[1] >= self.W, "chunk must be >= window at a sequence start"
+            new.append(u[:, -self.W:])
+            z = blk(z, c, bias)
+        return self.head(self.lnf(z)), new
+
+
 class Net(nn.Module):
     """Plain: optional Linear projection, stacked GRUs, linear head (optionally also on the raw row).
     dz=True (the block design read in dozken/wunder challenge-3/src/model.py, our own implementation): raw row
     standardised by train mean/std and clipped at +-10 (diff scaled by the same std), projection Linear -> GELU ->
     LayerNorm, dropout between GRU layers, head LayerNorm(concat(GRU out, projected input)) -> Linear(H) -> GELU ->
     Dropout -> Linear(2)."""
+
+    def __new__(cls, mc):
+        return TFNet(mc) if mc.get("tf") else super().__new__(cls)
 
     def __init__(self, mc):
         super().__init__()
