@@ -126,7 +126,11 @@ held-out does not rank partners at this resolution.
 Spearman(held-out, public) = -0.60 and Pearson = -0.43 over e8, rc1-rc5.
 The best held-out partner (rc3, e8s1, 0.69272) is 5th of 6 on public; the worst held-out pair (e8, 0.69043) is still the public best (0.65924).
 Offsets: e8 -0.0312, rc4 -0.0320, rc2 -0.0328, rc1 -0.0335, rc5 -0.0336, rc3 -0.0352; the offset grows as held-out improves.
-This fits the regime hypothesis below (more fitting to held-out's regime costs on public) but six points do not prove it.
+CORRECTION (same day, Fable's bootstrap, /tmp/wnn_board6.log, docs/fable-plan-2026-10-23.md): this is noise, not a ranking.
+The six pairs span 0.00229 held-out; the expected range of six noise draws is 0.00294; mean paired SE vs the e8 pair is 0.00112 on 192 sequences (max z 1.6).
+Under a 2,000-draw sequence bootstrap Spearman(held-out, public) has mean -0.29, sd 0.44, 28% positive; the -0.60 is one draw.
+The offset slope (-1.42) is what selection noise looks like (winner's curse predicts -1); six points cannot separate it from a regime effect.
+Held-out is about 10x too small for the partner question; the public board (SE 0.00035-0.00078) redraws the same noise.
 Distillation students (rc1, rc4) do not beat e8 on public either.
 
 Timing limits: 1.2x the baseline's platform ratio fits at 47m52s; 1.29x timed out (HANDOFF.md).
