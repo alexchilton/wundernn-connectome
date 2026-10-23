@@ -48,6 +48,8 @@ ap.add_argument("--resume", action="store_true")
 ap.add_argument("--init", default="")
 ap.add_argument("--soft-mask", action="store_true", help="weight the train loss by <data>/<train-name>_P.npy (mask model P(scored))")
 ap.add_argument("--add-valid-from", type=int, default=0, help="also train on valid[k:] with its true mask (0 = off)")
+ap.add_argument("--valid-slice", default="", help="a:b = hold out valid[a:b] for eval and train on valid[:a] + valid[b:] "
+                "with their true masks (fold instrument; replaces --n-valid / --add-valid-from)")
 ap.add_argument("--state-reset", type=int, default=0, help="zero the GRU state every N rows, in training, eval and export (0 = never)")
 ap.add_argument("--diff", action="store_true", help="add x - x_prev to the inputs")
 ap.add_argument("--ema", default="", help="comma list of EMA time constants; adds x - ema_T(x) per T")
@@ -94,6 +96,17 @@ if a.soft_mask:
 Xva, Yva, Mva = load(a.valid_name, a.n_valid)
 # training pool: (X, Y, W) sources; W is a per-row weight multiplier (None = 1)
 sources = [(Xtr, Ytr, Ptr)]
+if a.valid_slice:
+    assert not (a.add_valid_from or a.n_valid), "--valid-slice replaces --n-valid and --add-valid-from"
+    lo, hi = (int(v) for v in a.valid_slice.split(":"))
+    Xv, Yv, Mv = load(a.valid_name, 0)
+    assert 0 <= lo < hi <= Xv.shape[0], (lo, hi, Xv.shape[0])
+    Xva, Yva, Mva = Xv[lo:hi], Yv[lo:hi], Mv[lo:hi]
+    for s, e in ((0, lo), (hi, Xv.shape[0])):
+        if e > s:
+            sources.append((Xv[s:e], Yv[s:e], Mv[s:e]))
+assert not (a.add_valid_from and a.n_valid and a.add_valid_from < a.n_valid), \
+    "held-out valid[:n-valid] must not be in the training pool (add-valid-from < n-valid)"
 if a.add_valid_from:
     Xv, Yv, Mv = load(a.valid_name, 0)
     sources.append((Xv[a.add_valid_from:], Yv[a.add_valid_from:], Mv[a.add_valid_from:]))

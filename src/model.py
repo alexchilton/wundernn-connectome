@@ -129,8 +129,8 @@ class Net(nn.Module):
     LayerNorm, dropout between GRU layers, head LayerNorm(concat(GRU out, projected input)) -> Linear(H) -> GELU ->
     Dropout -> Linear(2)."""
 
-    def __new__(cls, mc):
-        return TFNet(mc) if mc.get("tf") else super().__new__(cls)
+    def __new__(cls, mc=None):                     # mc is None when copy.deepcopy rebuilds a Net (EMA AveragedModel)
+        return TFNet(mc) if mc is not None and mc.get("tf") else super().__new__(cls)
 
     def __init__(self, mc):
         super().__init__()
