@@ -20,3 +20,12 @@ Held-out 0.68984 (Fable, /tmp/e8_latest_holdout.npy), -0.0006 vs the board pair 
 Parity 0.0 on 2 x 2500 held-out rows; solution.py identical to the board pair's.
 Timing on the M4, interleaved with the board pair (logs/release_cand_6.log): 26.9-29.8 vs 25.7-28.9 us/call, same graph, noise.
 Pre-registered (docs/fable-plan-2026-10-23.md item 2): public >= 0.6588 says held-out best.pt selection is worthless on the board; public <= 0.6580 says it is not.
+
+## release_cand_7.zip (2026-10-23) — Fable plan item 5 (board test of the regime)
+
+e8 recipe + EMA 0.999, seed 0, trained WITHOUT valid[192:] (`out/e8noval_s0/latest.pt`, last epoch; pool 10,607 train sequences) + dz96p32_s1 latest, fused (`out/fz_e8noval_dz96s1`).
+Member held-out: 0.68727 at the last epoch (best 0.68752 at ep5) vs 0.68896 for e8 trained with valid[192:] (-0.0017, inside Fable's predicted -0.002 to -0.004).
+Parity 0.0; solution.py identical to the board pair's; timing 26.1-29.3 vs 25.6-26.7 us/call (logs/release_cand_7.log), same graph.
+Pre-registered (docs/fable-plan-2026-10-23.md item 5): public >= 0.6590 says the test set is train-like; public <= 0.6570 says valid-like or noise.
+Weak test if the public sample is small (SE ~0.0008 at 394 sequences): the two predictions are 2.5 SE apart.
+Upload after release_cand_6.

@@ -142,6 +142,9 @@ Spearman(valid, train) 0.10 (|y|P) and 0.33 (|y|), below the pre-registered 0.8:
 HYPOTHESIS: beyond about 4 epochs the e8 recipe fits the valid regime at the expense of train-like data; item 5 (e8noval_s0) is the board test.
 Caveat: train uses the soft P mask (train has no true mask), so only the curve shape is comparable, not the level.
 Data note: train_Y.npy on Drive is float32 (X and P float16); train600 is every 17th train sequence, not train[:600].
+
+Item 5 member (*measured*, out/e8noval_s0, logs/colab_e8noval_s0.log): e8 recipe + EMA without valid[192:]: held-out per epoch end 0.68524 (ep2) 0.68527 0.68630 0.68752 (ep5, best) 0.68721 0.68727 (last); -0.0017 vs e8 with valid[192:] at the last epoch.
+Fused with dz96p32_s1 as submissions/release_cand_7.zip; the board decides train-like (>= 0.6590) vs valid-like/noise (<= 0.6570).
 Distillation students (rc1, rc4) do not beat e8 on public either.
 
 Timing limits: 1.2x the baseline's platform ratio fits at 47m52s; 1.29x timed out (HANDOFF.md).
