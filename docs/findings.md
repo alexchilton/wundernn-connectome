@@ -135,6 +135,13 @@ Held-out is about 10x too small for the partner question; the public board (SE 0
 Seed lottery, 2026-10-23 (*measured*, day chain 9, logs/day_chain9.log; best eval on valid[0:192], same dz96p32 recipe): s0 0.68329, s1 0.68739, s2 0.68472, s3 0.68436, s4 0.68445.
 s1 (the board pair's dz member) is 0.0029 above the mean of the other four (0.68421, spread about 0.0006): a lucky seed or a lucky best.pt pick.
 No seed beats s1, so no seed-swap candidate was built.
+
+Train-regime read-out, 2026-10-23 (*measured*, Fable plan item 4; e8 recipe + EMA + --train-holdout 192, out/e8th_s0/ep1-8.pt; scratch/item4_readout.py, logs/item4_readout.log): valid[0:192] true-mask WP 0.68090 0.68508 0.68796 0.68798 0.68831 0.68935 0.68878 0.68896 (identical to the trainer's own evals); train[:192] |y|P-weighted 0.58741 0.59480 0.59812 0.59908 0.59858 0.59721 0.59462 0.59273; |y|-weighted peaks at ep5.
+Peak epoch: valid 6, train-regime 4 (|y|P) / 5 (|y|); train-regime falls 0.0064 from ep4 to ep8 while valid stays at its peak.
+Spearman(valid, train) 0.10 (|y|P) and 0.33 (|y|), below the pre-registered 0.8: the regime story survives locally.
+HYPOTHESIS: beyond about 4 epochs the e8 recipe fits the valid regime at the expense of train-like data; item 5 (e8noval_s0) is the board test.
+Caveat: train uses the soft P mask (train has no true mask), so only the curve shape is comparable, not the level.
+Data note: train_Y.npy on Drive is float32 (X and P float16); train600 is every 17th train sequence, not train[:600].
 Distillation students (rc1, rc4) do not beat e8 on public either.
 
 Timing limits: 1.2x the baseline's platform ratio fits at 47m52s; 1.29x timed out (HANDOFF.md).
