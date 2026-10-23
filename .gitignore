@@ -4,3 +4,5 @@ logs/
 out/
 *.part
 wnn_connectome_starterpack/
+__pycache__/
+*.pyc
