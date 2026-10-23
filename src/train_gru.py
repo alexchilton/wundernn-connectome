@@ -166,7 +166,7 @@ if a.resume and os.path.exists(f"{a.out}/latest.pt"):
         if "ema_model" not in ck:
             raise SystemExit("refusing to resume an EMA run from a checkpoint without EMA state")
         ema_model.load_state_dict(ck["ema_model"])
-    state = ck["state"]; rng.bit_generator.state = ck["rng"]; torch.set_rng_state(ck["torch_rng"])
+    state = ck["state"]; rng.bit_generator.state = ck["rng"]; torch.set_rng_state(ck["torch_rng"].cpu())     # map_location=dev puts it on the GPU
     print(f"RESUMED epoch {state['epoch']} batch {state['batch']}/{n_batches}, best {state['best']:.5f}, "
           f"{len(state['history'])} evals in history, perm len {len(state['perm'])}", flush=True)
 

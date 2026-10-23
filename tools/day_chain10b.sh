@@ -45,6 +45,7 @@ for name, extra in [("e8noval_s0", f"{arm} --seed 0")]:                         
     open(f"/content/wnn/logs/{name}.log", "a").write(f"\nEXEC EXIT {r.returncode}\n")
 PY
 timeout 60 $C rm -s $S /content/wnn/logs/smoke_day10b.log < /dev/null > /dev/null 2>&1; rm -f logs/colab_smoke_day10b_$S.log
+for a in $ARMS; do timeout 60 $C rm -s $S /content/wnn/logs/$a.log < /dev/null > /dev/null 2>&1; rm -f logs/colab_$a.log; done   # a resubmit must not read the last attempt's EXEC EXIT
 $C exec -s $S -f /tmp/wnn_day10b.py < /dev/null >> $L 2>&1 &
 echo "$(date +%H:%M) job submitted: rclone data copy (~27 min), smoke, then arms" >> $L
 until timeout 60 $C download -s $S /content/wnn/logs/smoke_day10b.log logs/colab_smoke_day10b_$S.log < /dev/null > /dev/null 2>&1 && grep -q "^EXEC EXIT" logs/colab_smoke_day10b_$S.log; do sleep 60; done
