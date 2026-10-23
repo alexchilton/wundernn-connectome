@@ -12,7 +12,7 @@ Checkpoints: <out>/latest.pt every --save-every batches, <out>/best.pt on best v
 Export: <out>/model.onnx + <out>/meta.json via model.export (features in, explicit state tensors in/out).
 Architecture options (--diff, --ema, --proj, --skip) are documented in model.py.
 """
-import argparse, json, os, sys, time
+import argparse, json, os, shutil, sys, time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -48,6 +48,8 @@ ap.add_argument("--resume", action="store_true")
 ap.add_argument("--init", default="")
 ap.add_argument("--soft-mask", action="store_true", help="weight the train loss by <data>/<train-name>_P.npy (mask model P(scored))")
 ap.add_argument("--add-valid-from", type=int, default=0, help="also train on valid[k:] with its true mask (0 = off)")
+ap.add_argument("--train-holdout", type=int, default=0, help="exclude train[:k] from the pool (train-regime held-out, "
+                "scored offline from the ep<k>.pt checkpoints; Fable plan 2026-10-23 item 4)")
 ap.add_argument("--valid-slice", default="", help="a:b = hold out valid[a:b] for eval and train on valid[:a] + valid[b:] "
                 "with their true masks (fold instrument; replaces --n-valid / --add-valid-from)")
 ap.add_argument("--state-reset", type=int, default=0, help="zero the GRU state every N rows, in training, eval and export (0 = never)")
@@ -93,6 +95,9 @@ Xtr, Ytr, _ = load(a.train_name, a.n_train)
 Ptr = None
 if a.soft_mask:
     Ptr = np.load(f"{a.data}/{a.train_name}_P.npy", mmap_mode="r")[:Xtr.shape[0]]
+if a.train_holdout:
+    Xtr, Ytr = Xtr[a.train_holdout:], Ytr[a.train_holdout:]
+    Ptr = Ptr[a.train_holdout:] if Ptr is not None else None
 Xva, Yva, Mva = load(a.valid_name, a.n_valid)
 # training pool: (X, Y, W) sources; W is a per-row weight multiplier (None = 1)
 sources = [(Xtr, Ytr, Ptr)]
@@ -306,6 +311,7 @@ while state["epoch"] < a.epochs:
         state["best"] = wp; save(f"{a.out}/best.pt")
     state["epoch"] += 1; state["batch"] = 0; state["perm"] = rng.permutation(len(pool))
     save(f"{a.out}/latest.pt")
+    shutil.copy(f"{a.out}/latest.pt", f"{a.out}/ep{state['epoch']}.pt")      # every epoch end, for offline read-outs
 
 # export best (or latest for a smoke run) to ONNX
 src = f"{a.out}/best.pt" if os.path.exists(f"{a.out}/best.pt") else f"{a.out}/latest.pt"
