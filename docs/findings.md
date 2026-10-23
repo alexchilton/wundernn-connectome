@@ -10,6 +10,11 @@ Newest first. Held-out is valid[0:191] unless stated. Platform time is given whe
 
 | date | submission | held-out | public | platform time | source |
 |---|---|---|---|---|---|
+| 2026-10-23 | release_cand_4: distill_a05_s1/latest.pt (student, last epoch) + dz96p32_s1, fused | 0.69060 | 0.65863 | 47m37s | submissions/release_candidates.md |
+| 2026-10-23 | release_cand_2: c2000_lr1e3_e8/best.pt + dz96p32_s1, fused | 0.69118 | 0.65835 | 46m17s | submissions/release_candidates.md |
+| 2026-10-23 | release_cand_1: distill_a05_s1/best.pt (student) + dz96p32_s1, fused | 0.69108 | 0.65754 | 46m57s | submissions/release_candidates.md |
+| 2026-10-23 | release_cand_3: c1000_lr1e3_e8_s1/best.pt + dz96p32_s1, fused | 0.69272 | 0.65752 | 46m17s | submissions/release_candidates.md |
+| 2026-10-23 | release_cand_5: c4000_lr1e3_s1/best.pt + dz96p32_s1, fused | 0.69065 | 0.65707 | 47m2s | submissions/release_candidates.md |
 | 2026-10-22 | e8 (`out/c1000_lr1e3_e8`) + dz96p32_s1 (`out/dz96p32_s1`), fused (`fz_e8_dz96s1`) — **today's best** | 0.69043 | **0.65924** | 47m52s | HANDOFF.md |
 | 2026-10-22 | e8 + dz128, fused | — | TIMEOUT | 1.29x platform ratio | HANDOFF.md |
 | 2026-10-22 | dz128 single | 0.68655 | 0.65566 | — | HANDOFF.md |
@@ -115,6 +120,14 @@ Selection optimism (best eval minus the mean of the last 8 evals of the same run
 
 Held-out-to-public offset by recipe (*measured*): baseline -0.026, full1 (4 ep) -0.029, fs1+fs2 -0.030, fs1+r2k -0.031, e8+fs1 (8+4 ep) -0.030, s1+c2000 (8+8 ep) -0.036 (fable-plan-2026-10-21.md section 2).
 HANDOFF.md states the same range more broadly: offset about -0.031 for dz pairs, range -0.026 to -0.036 overall.
+
+Partner scan, 2026-10-23 (*measured*, six pairs sharing dz96p32_s1, only the partner differs):
+held-out does not rank partners at this resolution.
+Spearman(held-out, public) = -0.60 and Pearson = -0.43 over e8, rc1-rc5.
+The best held-out partner (rc3, e8s1, 0.69272) is 5th of 6 on public; the worst held-out pair (e8, 0.69043) is still the public best (0.65924).
+Offsets: e8 -0.0312, rc4 -0.0320, rc2 -0.0328, rc1 -0.0335, rc5 -0.0336, rc3 -0.0352; the offset grows as held-out improves.
+This fits the regime hypothesis below (more fitting to held-out's regime costs on public) but six points do not prove it.
+Distillation students (rc1, rc4) do not beat e8 on public either.
 
 Timing limits: 1.2x the baseline's platform ratio fits at 47m52s; 1.29x timed out (HANDOFF.md).
 Platform cap in M4 tight-loop terms is about 26 to 28 us; 256-wide fuses at 19.4 us tight loop, 24.5 to 25.9 us scorer loop, 46 to 48 min on the platform (fable-plan-2026-10-21.md section 3).
