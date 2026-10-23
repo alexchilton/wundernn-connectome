@@ -131,6 +131,10 @@ The six pairs span 0.00229 held-out; the expected range of six noise draws is 0.
 Under a 2,000-draw sequence bootstrap Spearman(held-out, public) has mean -0.29, sd 0.44, 28% positive; the -0.60 is one draw.
 The offset slope (-1.42) is what selection noise looks like (winner's curse predicts -1); six points cannot separate it from a regime effect.
 Held-out is about 10x too small for the partner question; the public board (SE 0.00035-0.00078) redraws the same noise.
+
+Seed lottery, 2026-10-23 (*measured*, day chain 9, logs/day_chain9.log; best eval on valid[0:192], same dz96p32 recipe): s0 0.68329, s1 0.68739, s2 0.68472, s3 0.68436, s4 0.68445.
+s1 (the board pair's dz member) is 0.0029 above the mean of the other four (0.68421, spread about 0.0006): a lucky seed or a lucky best.pt pick.
+No seed beats s1, so no seed-swap candidate was built.
 Distillation students (rc1, rc4) do not beat e8 on public either.
 
 Timing limits: 1.2x the baseline's platform ratio fits at 47m52s; 1.29x timed out (HANDOFF.md).
