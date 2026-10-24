@@ -33,6 +33,8 @@ def model_cfg(c):
         mc.update(dz=True, dropout=float(c.get("dropout", 0.1)))
     if c.get("aux"):    # auxiliary training targets: extra head rows, never exported
         mc.update(aux=int(c["aux"]))
+    if c.get("bidir"):  # teacher only (train_gru.py --bidir), never exported
+        mc.update(bidir=True)
     if c.get("tf"):
         mc.update(tf=True, window=int(c.get("window", 256)), heads=int(c.get("heads", 4)), dropout=float(c.get("dropout", 0.1)))
     return mc
@@ -124,6 +126,43 @@ class TFNet(nn.Module):
         return self.head(self.lnf(z)), new
 
 
+class BiNet(nn.Module):
+    """Teacher only, never exported (findings 5: architectural diversity for distillation): a forward and a backward GRU
+    stack over the same plain features, linear head on [forward, backward]. Every row sees the whole sequence.
+    Truncated at chunk edges in both directions: bwd_states() is a no-grad right-to-left pass giving the backward state
+    entering each chunk from the right; chunk() runs one chunk with the forward state carried from the left."""
+
+    def __init__(self, mc):
+        super().__init__()
+        H, L, nin = mc["hidden"], mc["layers"], feat_dim(mc)
+        assert not (mc["proj"] or mc["skip"] or mc.get("dz") or mc.get("aux")), "bidir: plain features only"
+        self.f = nn.ModuleList([nn.GRU(nin if i == 0 else H, H, batch_first=True) for i in range(L)])
+        self.b = nn.ModuleList([nn.GRU(nin if i == 0 else H, H, batch_first=True) for i in range(L)])
+        self.head = nn.Linear(2 * H, 2)
+
+    @staticmethod
+    def _run(grus, z, hs):
+        new = []
+        for g, h in zip(grus, hs):
+            z, h = g(z, h)
+            new.append(h)
+        return z, new
+
+    @torch.no_grad()
+    def bwd_states(self, f, step):
+        hs = [f.new_zeros(1, f.shape[0], g.hidden_size) for g in self.b]
+        st = {}
+        for c in reversed(range(0, f.shape[1], step)):
+            st[c] = hs
+            _, hs = self._run(self.b, f[:, c:c + step].flip(1), hs)
+        return st
+
+    def chunk(self, fc, hf, hb):
+        zf, hf = self._run(self.f, fc, hf)
+        zb, _ = self._run(self.b, fc.flip(1), hb)
+        return self.head(torch.cat([zf, zb.flip(1)], -1)), hf
+
+
 class Net(nn.Module):
     """Plain: optional Linear projection, stacked GRUs, linear head (optionally also on the raw row).
     dz=True (the block design read in dozken/wunder challenge-3/src/model.py, our own implementation): raw row
@@ -132,6 +171,8 @@ class Net(nn.Module):
     Dropout -> Linear(2)."""
 
     def __new__(cls, mc=None):                     # mc is None when copy.deepcopy rebuilds a Net (EMA AveragedModel)
+        if mc is not None and mc.get("bidir"):
+            return BiNet(mc)
         return TFNet(mc) if mc is not None and mc.get("tf") else super().__new__(cls)
 
     def __init__(self, mc):
