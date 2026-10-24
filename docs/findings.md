@@ -165,6 +165,13 @@ us/call numbers (two separate measurement sessions; note the disagreement):
   level_s0 (--aux 2 --aux-kind level --aux-w 0.2) best 0.68759 (+0.0006, null). quiet passes the +0.001 bar on one seed; needs seed 1 and a pair test.
   Checkpoints out/quiet_s0, out/level_s0 (and gdrive:wnn/out). Chain bug: pull() reused the global loop variable, so quiet's completion was logged as level_s0; fixed (local a).
 
+- 2026-10-24 chain 12b (arm-four, Colab L4 wnn14, e8 recipe seed 0, --distill 0.5): student13_s0, target from the precomputed mean of the 13
+  checkpoints in tools/teach13.txt (out/teach13), best held-out **0.68967** (+0.0026 over e8 0.68703; chain 7 2-model students +0.001).
+  bidir_s0 (bidirectional GRU teacher) reached held-out 0.99641: future rows determine the target almost exactly (my single-feature
+  linear leak check, 0.12 vs 0.11, was not a valid test). A student of it trains on ~y; stopped before studentbi, session stopped.
+- 2026-10-24 RC fz_quiet_dz96s1 (src/fuse.py quiet_s0/best.pt + dz96p32_s1/latest.pt; fuse.py now slices --aux heads to [:2]):
+  holdout192 WP 0.69088 vs fz_e8_dz96s1 0.69043 (+0.00045), 26.7 us/call (logs/rc_quiet.log).
+
 ## 5. Open hypotheses
 
 - HYPOTHESIS: an auxiliary head predicting log(rows to next `i0_p` change) and the sign of that change forces the state to hold a running "how far into a quiet period" estimate, which is the quantity separating the 0.80 age-0 band from the 0.42 age>=64 band. Cheapest test: one full-data arm, read by age band (part_m.py pattern); disproof is the age>=64 band unchanged within the seed spread (+/-0.008) (fable-ideas.md round 2 section 3 idea 6).

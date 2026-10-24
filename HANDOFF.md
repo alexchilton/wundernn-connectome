@@ -16,8 +16,8 @@ Offset about -0.031 for dz pairs (range -0.026 to -0.036 overall). Timing: 1.2x 
 ## Running (2026-10-24 15:50 CEST): the four findings-section-5 hypotheses, branch arm-four (c99e37d)
 - Code: --aux-kind quiet|level, --teacher-preds DIR (target = distill x T + (1 - distill) x clip(y)), --bidir (model.BiNet,
   teacher only, no export), src/dump_teacher.py (mean of checkpoints -> <name>_T.npy, resumable). Local smokes pass.
-- Leak check before the bidir teacher (21 valid sequences): best single-feature |corr(t0, future change)| 0.12 vs past change 0.11,
-  so future rows do not hand the teacher the target.
+- Leak check before the bidir teacher was WRONG: single-feature linear corr (0.12 vs 0.11) passed, but bidir_s0 reached held-out 0.99641,
+  so future rows do hand the teacher the target; the bidir branch was stopped.
 - tools/day_chain12a.sh on wnn13 (log logs/day_chain12a.log): quiet_s0 (--aux 2 --aux-kind quiet --aux-w 0.3), level_s0 (--aux-w 0.2).
 - tools/day_chain12b.sh on wnn14 (log logs/day_chain12b.log): dump of the 13 checkpoints in tools/teach13.txt -> student13_s0
   (--distill 0.5) in parallel with bidir_s0 -> dump -> studentbi_s0.

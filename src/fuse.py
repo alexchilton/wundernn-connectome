@@ -63,8 +63,8 @@ class Fused(nn.Module):
 
     def member_head(self, n, mc, o, u, x):
         if mc.get("dz"):
-            return n.head(n.head_norm(torch.cat([o, u], -1)))
-        return n.head(torch.cat([o, x], -1) if mc["skip"] else o)
+            return n.head(n.head_norm(torch.cat([o, u], -1)))[..., :2]     # [:2]: an --aux member's extra outputs are training-only
+        return n.head(torch.cat([o, x], -1) if mc["skip"] else o)[..., :2]
 
     def forward(self, x, d, hs):
         """x: raw rows (B, T, NF); d: x - previous row; hs: per-layer fused hidden states."""
@@ -102,7 +102,7 @@ with torch.no_grad():
         f = torch.from_numpy(make_feats(x.numpy(), mc)); hs = [torch.zeros(1, 2, mc["hidden"]) for _ in range(L)]
         R = mc["state_reset"] or 10 ** 9; outs = []
         for c in range(0, x.shape[1], R):
-            p, hs = n(f[:, c:c + R], [torch.zeros_like(h) for h in hs] if c else hs); outs.append(p)
+            p, hs = n(f[:, c:c + R], [torch.zeros_like(h) for h in hs] if c else hs); outs.append(p[..., :2])
         ref = ref + torch.cat(outs, 1) / M
     d = torch.zeros_like(x); d[:, 1:] = x[:, 1:] - x[:, :-1]
     hs = [torch.zeros(1, 2, HT) for _ in range(L)]; outs = []
