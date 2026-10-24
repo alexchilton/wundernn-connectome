@@ -29,3 +29,9 @@ Parity 0.0; solution.py identical to the board pair's; timing 26.1-29.3 vs 25.6-
 Pre-registered (docs/fable-plan-2026-10-23.md item 5): public >= 0.6590 says the test set is train-like; public <= 0.6570 says valid-like or noise.
 Weak test if the public sample is small (SE ~0.0008 at 394 sequences): the two predictions are 2.5 SE apart.
 Upload after release_cand_6.
+
+## Board readings (uploaded 2026-10-24 09:23, Alex)
+
+- release_cand_6.zip: public **0.65921** (platform 50m7s, 634 MB). Pre-registered >= 0.6588: held-out best.pt selection is worthless on the board (last epoch ties the board pair 0.65924, -0.00003).
+- release_cand_7.zip: public **0.65815** (51m7s, 629 MB). Between the thresholds (0.6570 < 0.65815 < 0.6590): inconclusive. Board cost of dropping valid[192:] -0.0011 vs held-out -0.0017. Keep valid[192:] in training.
+- Best public unchanged: 0.65924 (e8 best + dz96p32_s1).
