@@ -42,3 +42,7 @@ Upload after release_cand_6.
 - Held-out (src/score_holdout.py, 192 seqs, solution.py path): **0.69088** vs board pair fz_e8_dz96s1 0.69043 (+0.00045); 26.7 us/call on the M4 (board pair class: 47m52s on the platform).
 - Pre-registered reading: public >= 0.6602 = the quiet aux head transfers (+0.001 over 0.65924); <= 0.6587 = worse; between = inconclusive (pair noise ~0.001; held-out gain +0.00045 is inside it).
 - Not chosen: fz_s13_dz96s1 (student13_s0 + dz96p32_s1) held-out 0.69070, 25.5 us/call, although student13_s0 alone is 0.68967 vs quiet_s0 0.68834.
+
+## Board reading (uploaded 2026-10-24 18:42, Alex)
+
+- release_cand_8.zip: public **0.65936** (platform 48m21s, 629 MB). Pre-registered band 0.6587-0.6602: **inconclusive**. New best public by +0.00012 over 0.65924 (held-out predicted +0.00045; offset 0.69088 -> 0.65936 = -0.0315, in the usual -0.026 to -0.036 range).
