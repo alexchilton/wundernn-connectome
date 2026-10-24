@@ -31,6 +31,8 @@ def model_cfg(c):
               proj=int(c.get("proj", 0) or 0), skip=bool(c.get("skip", False)), time=bool(c.get("time", False)), state_reset=int(c.get("state_reset", 0) or 0))
     if c.get("dz"):     # only present when set, so configs of older checkpoints compare equal
         mc.update(dz=True, dropout=float(c.get("dropout", 0.1)))
+    if c.get("aux"):    # auxiliary training targets: extra head rows, never exported
+        mc.update(aux=int(c["aux"]))
     if c.get("tf"):
         mc.update(tf=True, window=int(c.get("window", 256)), heads=int(c.get("heads", 4)), dropout=float(c.get("dropout", 0.1)))
     return mc
@@ -144,13 +146,13 @@ class Net(nn.Module):
             self.grus = nn.ModuleList([nn.GRU(P if i == 0 else H, H, batch_first=True) for i in range(L)])
             self.drop = nn.Dropout(mc.get("dropout", 0.1))
             self.head_norm = nn.LayerNorm(H + P)
-            self.head = nn.Sequential(nn.Linear(H + P, H), nn.GELU(), nn.Dropout(mc.get("dropout", 0.1)), nn.Linear(H, 2))
+            self.head = nn.Sequential(nn.Linear(H + P, H), nn.GELU(), nn.Dropout(mc.get("dropout", 0.1)), nn.Linear(H, 2 + int(mc.get("aux", 0))))
             return
         self.proj = nn.Linear(nin, mc["proj"]) if mc["proj"] else None
         gin = mc["proj"] or nin
         self.grus = nn.ModuleList([nn.GRU(gin if i == 0 else H, H, batch_first=True) for i in range(L)])
         self.skip = mc["skip"]
-        self.head = nn.Linear(H + (NF if self.skip else 0), 2)
+        self.head = nn.Linear(H + (NF if self.skip else 0), 2 + int(mc.get("aux", 0)))
 
     def forward(self, f, hs):
         if self.dz:
@@ -195,7 +197,7 @@ class Step(nn.Module):
             t = states[k]; k += 1
             parts.append(torch.log1p(t) / float(np.log(20000.0))); extra.append(t + 1.0)
         p, new = self.net(torch.cat(parts, -1) if len(parts) > 1 else x, hs)
-        return (p, *new, *extra)
+        return (p[..., :2], *new, *extra)
 
 
 def state_spec(mc):

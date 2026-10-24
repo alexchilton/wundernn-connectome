@@ -74,6 +74,11 @@ ap.add_argument("--teacher", default="", help="comma list of checkpoints; their 
                 "handling as at inference) is mixed into the target")
 ap.add_argument("--distill", type=float, default=0.0, help="target = distill x teacher mean + (1 - distill) x clip(y); "
                 "row weights stay |clip(y)|")
+ap.add_argument("--wpow", type=float, default=1.0, help="row weight |clip(y)|^wpow in the loss (the metric's weight is wpow 1; "
+                "each chunk divides by its own weight sum, so the mean weight stays normalised)")
+ap.add_argument("--aux", type=int, default=0, help="auxiliary targets: future summed i0_dp0 and i1_dp0 over 10/50/200 rows "
+                "(6 extra head outputs, loss weight --aux-w, never exported); 0 = off, 6 = on")
+ap.add_argument("--aux-w", type=float, default=0.3)
 ap.add_argument("--max-batches", type=int, default=0, help="smoke test: stop after this many batches")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
@@ -194,7 +199,7 @@ def evaluate():
             if a.state_reset and c % a.state_reset == 0:
                 hs = [torch.zeros_like(h) for h in hs]
             p, hs = net(x[:, c:c + step], hs)
-            out.append(p.float().cpu().numpy())
+            out.append(p[..., :2].float().cpu().numpy())
         p = np.concatenate(out, 1)
         y = np.asarray(Yva[s:s + 64])
         m = np.zeros(y.shape[:2], bool); m[:, WARMUP:] = True
@@ -209,7 +214,7 @@ def evaluate():
 
 def loss_fn(p, y, first_step, rw, denom=None, tgt=None):
     y = y.clamp(-2, 2)
-    w = y.abs() if a.loss in ("wmse", "pearson") else torch.ones_like(y)
+    w = y.abs() ** a.wpow if a.loss in ("wmse", "pearson") else torch.ones_like(y)
     if tgt is not None:
         y = tgt
     w = w * rw[:, :, None]
@@ -255,6 +260,14 @@ while state["epoch"] < a.epochs:
         rw = torch.from_numpy(np.stack([np.ones(L_SEQ, np.float32) if sources[si][2] is None
                                         else np.asarray(sources[si][2][i], dtype=np.float32) for si, i in idx])).to(dev)
         hs = [torch.zeros(1, len(idx), a.hidden, device=dev) for _ in range(a.layers)]
+        if a.aux:   # future summed trade-price changes of i0 (col 44) and i1 (col 96) over 10/50/200 rows, / sqrt(h)
+            cs = np.cumsum(raw[:, :, [44, 96]], axis=1, dtype=np.float64)
+            fut, fok = [], []
+            for hh in (10, 50, 200):
+                f = np.zeros_like(cs); f[:, :-hh] = (cs[:, hh:] - cs[:, :-hh]) / np.sqrt(hh); fut.append(f)
+                ok = np.zeros(cs.shape[:2], bool); ok[:, :-hh] = True; fok += [ok, ok]
+            ya = torch.from_numpy(np.concatenate(fut, -1).astype(np.float32)).to(dev).clamp(-5, 5)
+            ma = torch.from_numpy(np.stack(fok, -1).astype(np.float32)).to(dev)
         tot = 0.0
         denom = None
         prev = torch.zeros(6, 2, device=dev)
@@ -267,6 +280,8 @@ while state["epoch"] < a.epochs:
                 hs = [torch.zeros_like(h) for h in hs]
             p, hs = model(x[:, c:c + a.chunk], hs)
             hs = [h.detach() for h in hs]
+            if a.aux:
+                pa, p = p[..., 2:], p[..., :2]
             tgt = None
             if teachers:
                 with torch.no_grad():
@@ -277,6 +292,11 @@ while state["epoch"] < a.epochs:
                         tpk, ths[k] = tn(tx[k][:, c:c + a.chunk], ths[k]); tps.append(tpk)
                     tgt = a.distill * torch.stack(tps).mean(0) + (1 - a.distill) * y[:, c:c + a.chunk].clamp(-2, 2)
             loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk], denom, tgt)
+            if a.aux:
+                m_ = ma[:, c:c + a.chunk]
+                if c < WARMUP:
+                    m_ = m_ * (torch.arange(c, c + m_.shape[1], device=dev) >= WARMUP)[None, :, None]
+                loss = loss + a.aux_w * (m_ * (pa - ya[:, c:c + a.chunk]) ** 2).sum() / m_.sum().clamp_min(1.0)
             if a.loss == "pearson":
                 pl, cur = pearson_loss(p, y[:, c:c + a.chunk], chunk_weights(y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk]), prev)
                 prev = prev + cur
