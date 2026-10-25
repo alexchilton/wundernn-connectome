@@ -1,0 +1,13 @@
+out/c1000_lr1e3_e8/best.pt
+out/final_s1/best.pt
+out/final_s2/best.pt
+out/c1000_lr1e3_e8_s1/best.pt
+out/c2000_lr1e3_e8/best.pt
+out/c4000_lr1e3_s1/best.pt
+out/dz128_s0/best.pt
+out/dz128_s1/best.pt
+out/dz192_s0/best.pt
+out/dz192_s1/best.pt
+out/dz96p32_s0/latest.pt
+out/dz96p32_s1/latest.pt
+out/dzish128/best.pt

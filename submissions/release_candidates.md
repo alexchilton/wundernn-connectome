@@ -35,3 +35,14 @@ Upload after release_cand_6.
 - release_cand_6.zip: public **0.65921** (platform 50m7s, 634 MB). Pre-registered >= 0.6588: held-out best.pt selection is worthless on the board (last epoch ties the board pair 0.65924, -0.00003).
 - release_cand_7.zip: public **0.65815** (51m7s, 629 MB). Between the thresholds (0.6570 < 0.65815 < 0.6590): inconclusive. Board cost of dropping valid[192:] -0.0011 vs held-out -0.0017. Keep valid[192:] in training.
 - Best public unchanged: 0.65924 (e8 best + dz96p32_s1).
+
+## release_cand_8 (built 2026-10-24 18:50, not uploaded)
+
+- release_cand_8.zip = out/fz_quiet_dz96s1: src/fuse.py out/quiet_s0/best.pt + out/dz96p32_s1/latest.pt (quiet_s0 = e8 recipe + --aux 2 --aux-kind quiet, branch arm-four; fuse.py slices the aux head to [:2]). solution.py byte-identical to the board pair's.
+- Held-out (src/score_holdout.py, 192 seqs, solution.py path): **0.69088** vs board pair fz_e8_dz96s1 0.69043 (+0.00045); 26.7 us/call on the M4 (board pair class: 47m52s on the platform).
+- Pre-registered reading: public >= 0.6602 = the quiet aux head transfers (+0.001 over 0.65924); <= 0.6587 = worse; between = inconclusive (pair noise ~0.001; held-out gain +0.00045 is inside it).
+- Not chosen: fz_s13_dz96s1 (student13_s0 + dz96p32_s1) held-out 0.69070, 25.5 us/call, although student13_s0 alone is 0.68967 vs quiet_s0 0.68834.
+
+## Board reading (uploaded 2026-10-24 18:42, Alex)
+
+- release_cand_8.zip: public **0.65936** (platform 48m21s, 629 MB). Pre-registered band 0.6587-0.6602: **inconclusive**. New best public by +0.00012 over 0.65924 (held-out predicted +0.00045; offset 0.69088 -> 0.65936 = -0.0315, in the usual -0.026 to -0.036 range).

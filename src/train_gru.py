@@ -74,6 +74,18 @@ ap.add_argument("--teacher", default="", help="comma list of checkpoints; their 
                 "handling as at inference) is mixed into the target")
 ap.add_argument("--distill", type=float, default=0.0, help="target = distill x teacher mean + (1 - distill) x clip(y); "
                 "row weights stay |clip(y)|")
+ap.add_argument("--wpow", type=float, default=1.0, help="row weight |clip(y)|^wpow in the loss (the metric's weight is wpow 1; "
+                "each chunk divides by its own weight sum, so the mean weight stays normalised)")
+ap.add_argument("--aux", type=int, default=0, help="auxiliary targets: future summed i0_dp0 and i1_dp0 over 10/50/200 rows "
+                "(6 extra head outputs, loss weight --aux-w, never exported); 0 = off, 6 = on")
+ap.add_argument("--aux-w", type=float, default=0.3)
+ap.add_argument("--aux-kind", choices=["move", "quiet", "level"], default="move",
+                help="move: --aux 6, future summed i0/i1 trade-price changes; quiet: --aux 2, log rows to the next i0_p0 change "
+                "and its sign (findings 5, idea 6); level: --aux 2, |y|-weighted mean of clip(y) over the next 2000 rows (idea 9)")
+ap.add_argument("--teacher-preds", default="", help="directory with <name>_T.npy (same shape as <name>_Y.npy, written by "
+                "src/dump_teacher.py or src/train_bidir.py): target = distill x T + (1 - distill) x clip(y)")
+ap.add_argument("--bidir", action="store_true", help="bidirectional GRU teacher (model.BiNet): no ONNX export; "
+                "dump its predictions with src/dump_teacher.py for --teacher-preds")
 ap.add_argument("--max-batches", type=int, default=0, help="smoke test: stop after this many batches")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
@@ -115,7 +127,22 @@ assert not (a.add_valid_from and a.n_valid and a.add_valid_from < a.n_valid), \
 if a.add_valid_from:
     Xv, Yv, Mv = load(a.valid_name, 0)
     sources.append((Xv[a.add_valid_from:], Yv[a.add_valid_from:], Mv[a.add_valid_from:]))
+tsrc = [None] * len(sources)     # teacher predictions per source, sliced exactly like the source's Y
+if a.teacher_preds:
+    assert a.distill > 0 and not a.teacher and a.loss != "pearson", "--teacher-preds needs --distill > 0, no --teacher, wmse/mse"
+    assert not (a.train_holdout or a.valid_slice or a.n_train), "--teacher-preds: slicing not wired for these options"
+    Ttr = np.load(f"{a.teacher_preds}/{a.train_name}_T.npy", mmap_mode="r")
+    assert Ttr.shape == Ytr.shape, (Ttr.shape, Ytr.shape)
+    tsrc[0] = Ttr
+    if a.add_valid_from:
+        Tva = np.load(f"{a.teacher_preds}/{a.valid_name}_T.npy", mmap_mode="r")
+        assert Tva.shape[1:] == Ytr.shape[1:], Tva.shape
+        tsrc[len(sources) - 1] = Tva[a.add_valid_from:]
+    print(f"TEACHER PREDS {a.teacher_preds}: sources with teacher targets {[t is not None for t in tsrc]}, distill {a.distill}", flush=True)
+    assert all(t is not None for t in tsrc), "every training source needs teacher predictions"
 pool = [(si, i) for si, (X, _, _) in enumerate(sources) for i in range(X.shape[0])]
+assert not (a.bidir and (a.tf or a.dz or a.state_reset or a.aux or a.teacher or a.proj or a.skip or a.loss == "pearson")), \
+    "--bidir: plain GRU features, wmse/mse, no state reset/aux/teacher"
 assert not (a.tf and a.state_reset), "--tf keeps a window cache, not a resettable state"
 if a.state_reset:
     assert a.chunk <= a.state_reset and a.state_reset % a.chunk == 0 and (2000 % a.state_reset == 0 or a.state_reset % 2000 == 0), \
@@ -190,11 +217,12 @@ def evaluate():
         hs = [torch.zeros(1, x.shape[0], a.hidden, device=dev) for _ in range(a.layers)]
         out = []
         step = min(2000, a.state_reset) if a.state_reset else 2000
+        bst = net.bwd_states(x, step) if a.bidir else None
         for c in range(0, L_SEQ, step):
             if a.state_reset and c % a.state_reset == 0:
                 hs = [torch.zeros_like(h) for h in hs]
-            p, hs = net(x[:, c:c + step], hs)
-            out.append(p.float().cpu().numpy())
+            p, hs = net.chunk(x[:, c:c + step], hs, bst[c]) if a.bidir else net(x[:, c:c + step], hs)
+            out.append(p[..., :2].float().cpu().numpy())
         p = np.concatenate(out, 1)
         y = np.asarray(Yva[s:s + 64])
         m = np.zeros(y.shape[:2], bool); m[:, WARMUP:] = True
@@ -209,7 +237,7 @@ def evaluate():
 
 def loss_fn(p, y, first_step, rw, denom=None, tgt=None):
     y = y.clamp(-2, 2)
-    w = y.abs() if a.loss in ("wmse", "pearson") else torch.ones_like(y)
+    w = y.abs() ** a.wpow if a.loss in ("wmse", "pearson") else torch.ones_like(y)
     if tgt is not None:
         y = tgt
     w = w * rw[:, :, None]
@@ -242,6 +270,40 @@ def pearson_loss(p, y, w, prev):
     return 1 - corr.mean(), cur.detach()
 
 
+AUX_N = {"move": 6, "quiet": 2, "level": 2}
+assert not a.aux or a.aux == AUX_N[a.aux_kind], f"--aux-kind {a.aux_kind} needs --aux {AUX_N[a.aux_kind]}"
+
+
+def aux_targets(raw, yraw):
+    """(targets, mask), each (B, L, a.aux) float32; mask 0 where the target is undefined (no future left)."""
+    B, L = raw.shape[:2]
+    if a.aux_kind == "move":   # future summed trade-price changes of i0 (col 44) and i1 (col 96) over 10/50/200 rows, / sqrt(h)
+        cs = np.cumsum(raw[:, :, [44, 96]], axis=1, dtype=np.float64)
+        fut, fok = [], []
+        for hh in (10, 50, 200):
+            f = np.zeros_like(cs); f[:, :-hh] = (cs[:, hh:] - cs[:, :-hh]) / np.sqrt(hh); fut.append(f)
+            ok = np.zeros(cs.shape[:2], bool); ok[:, :-hh] = True; fok += [ok, ok]
+        return np.clip(np.concatenate(fut, -1), -5, 5).astype(np.float32), np.stack(fok, -1).astype(np.float32)
+    if a.aux_kind == "quiet":   # rows to the next change of i0_p0 (col 0), log-scaled to [0, 1], and the sign of that change
+        v = raw[:, :, 0]
+        ch = np.zeros((B, L), bool); ch[:, :-1] = v[:, 1:] != v[:, :-1]          # row t changes at t + 1
+        nxt = np.full((B, L), -1, np.int64); last = np.full(B, -1, np.int64)
+        for t in range(L - 1, -1, -1):
+            last = np.where(ch[:, t], t + 1, last); nxt[:, t] = last
+        ok = nxt > 0
+        d = np.where(ok, nxt - np.arange(L)[None, :], 1)
+        sgn = np.sign(np.take_along_axis(v, np.where(ok, nxt, 0), 1) - v) * ok
+        t1 = np.log1p(np.minimum(d, 2000)) / np.log(2001.0)
+        return np.stack([t1, sgn], -1).astype(np.float32), np.stack([ok, ok], -1).astype(np.float32)
+    yc = np.clip(yraw, -2, 2).astype(np.float64)   # level: |y|-weighted mean of clip(y) over [t, t + 2000)
+    W = np.abs(yc)
+    cw = np.concatenate([np.zeros((B, 1, 2)), np.cumsum(W, 1)], 1); cwy = np.concatenate([np.zeros((B, 1, 2)), np.cumsum(W * yc, 1)], 1)
+    hi = np.minimum(np.arange(L) + 2000, L)
+    sw = cw[:, hi] - cw[:, :L]; swy = cwy[:, hi] - cwy[:, :L]
+    ok = (sw > 1e-6) & ((hi - np.arange(L)) >= 200)[None, :, None]
+    return np.where(ok, swy / np.maximum(sw, 1e-6), 0.0).astype(np.float32), ok.astype(np.float32)
+
+
 t0 = time.time()
 done_batches = state["epoch"] * n_batches + state["batch"]
 while state["epoch"] < a.epochs:
@@ -255,6 +317,10 @@ while state["epoch"] < a.epochs:
         rw = torch.from_numpy(np.stack([np.ones(L_SEQ, np.float32) if sources[si][2] is None
                                         else np.asarray(sources[si][2][i], dtype=np.float32) for si, i in idx])).to(dev)
         hs = [torch.zeros(1, len(idx), a.hidden, device=dev) for _ in range(a.layers)]
+        if a.aux:
+            ya, ma = aux_targets(raw, np.stack([np.asarray(sources[si][1][i], dtype=np.float32) for si, i in idx]))
+            ya, ma = torch.from_numpy(ya).to(dev), torch.from_numpy(ma).to(dev)
+        Tb = torch.from_numpy(np.stack([np.asarray(tsrc[si][i], dtype=np.float32) for si, i in idx])).to(dev) if a.teacher_preds else None
         tot = 0.0
         denom = None
         prev = torch.zeros(6, 2, device=dev)
@@ -262,12 +328,17 @@ while state["epoch"] < a.epochs:
             wy = y.clamp(-2, 2).abs() if a.loss == "wmse" else torch.ones_like(y)
             wy = wy * rw[:, :, None]; wy[:, :WARMUP] = 0
             denom = (wy.sum() / (L_SEQ // a.chunk)).clamp_min(1e-6)
+        bst = model.bwd_states(x, a.chunk) if a.bidir else None   # backward states from the current weights, once per batch
         for c in range(0, L_SEQ, a.chunk):
             if a.state_reset and c % a.state_reset == 0:
                 hs = [torch.zeros_like(h) for h in hs]
-            p, hs = model(x[:, c:c + a.chunk], hs)
+            p, hs = model.chunk(x[:, c:c + a.chunk], hs, bst[c]) if a.bidir else model(x[:, c:c + a.chunk], hs)
             hs = [h.detach() for h in hs]
+            if a.aux:
+                pa, p = p[..., 2:], p[..., :2]
             tgt = None
+            if Tb is not None:
+                tgt = a.distill * Tb[:, c:c + a.chunk].clamp(-2, 2) + (1 - a.distill) * y[:, c:c + a.chunk].clamp(-2, 2)
             if teachers:
                 with torch.no_grad():
                     tps = []
@@ -277,6 +348,11 @@ while state["epoch"] < a.epochs:
                         tpk, ths[k] = tn(tx[k][:, c:c + a.chunk], ths[k]); tps.append(tpk)
                     tgt = a.distill * torch.stack(tps).mean(0) + (1 - a.distill) * y[:, c:c + a.chunk].clamp(-2, 2)
             loss = loss_fn(p, y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk], denom, tgt)
+            if a.aux:
+                m_ = ma[:, c:c + a.chunk]
+                if c < WARMUP:
+                    m_ = m_ * (torch.arange(c, c + m_.shape[1], device=dev) >= WARMUP)[None, :, None]
+                loss = loss + a.aux_w * (m_ * (pa - ya[:, c:c + a.chunk]) ** 2).sum() / m_.sum().clamp_min(1.0)
             if a.loss == "pearson":
                 pl, cur = pearson_loss(p, y[:, c:c + a.chunk], chunk_weights(y[:, c:c + a.chunk], c, rw[:, c:c + a.chunk]), prev)
                 prev = prev + cur
@@ -316,7 +392,7 @@ while state["epoch"] < a.epochs:
 # export best (or latest for a smoke run) to ONNX
 src = f"{a.out}/best.pt" if os.path.exists(f"{a.out}/best.pt") else f"{a.out}/latest.pt"
 model.load_state_dict(torch.load(src, map_location="cpu", weights_only=False)["model"])   # EMA weights if --ema-weights
-if not MC.get("tf"):
+if not (MC.get("tf") or MC.get("bidir")):
     export(model, MC, a.out, dict(best_wp=state["best"], source=src, cfg=vars(a)))
     print(f"EXPORTED {a.out}/model.onnx from {src}, best WP {state['best']:.5f}", flush=True)
 print("TRAIN DONE", flush=True)
