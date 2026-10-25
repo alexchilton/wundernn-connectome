@@ -1,0 +1,7 @@
+torch==2.14.1
+numpy==2.4.6
+pandas==2.3.3
+onnx==1.23.2
+onnxruntime==1.31.0
+scipy==1.17.1
+pyarrow==18.1.0

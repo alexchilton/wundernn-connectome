@@ -171,6 +171,12 @@ us/call numbers (two separate measurement sessions; note the disagreement):
   linear leak check, 0.12 vs 0.11, was not a valid test). A student of it trains on ~y; stopped before studentbi, session stopped.
 - 2026-10-24 RC fz_quiet_dz96s1 (src/fuse.py quiet_s0/best.pt + dz96p32_s1/latest.pt; fuse.py now slices --aux heads to [:2]):
   holdout192 WP 0.69088 vs fz_e8_dz96s1 0.69043 (+0.00045), 26.7 us/call (logs/rc_quiet.log).
+  Board: release_cand_8 public **0.65936** (+0.00012 over 0.65924, inside the pre-registered inconclusive band). Best public result of the project.
+- 2026-10-24 chain 12d (Colab L4 wnn13): quiet_s1 (quiet aux target, seed 1), resumed from its Drive epoch-2 checkpoint.
+  Held-out per epoch 0.68458, 0.68756, 0.68734, **0.68868** (ep5), 0.68778, 0.68737 (ep7, EXEC EXIT 0).
+  Seed-1 baseline 0.69161: -0.0029. With quiet_s0 at +0.0013 the quiet target is a null over two seeds; no quiet pair built.
+- 2026-10-24 RC fz_s13_dz96s1 (student13_s0 + dz96p32_s1): holdout192 0.69070 (logs/rc_s13.log), below RC8's 0.69088 although
+  student13 is the best single member (HYPOTHESIS, unverified: lower diversity with dz96p32_s1). Not uploaded.
 
 ## 5. Open hypotheses
 
